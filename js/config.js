@@ -23,6 +23,7 @@ const firebaseConfig = {
     localStream: null,
     remoteStream:null,
     enableVideo:true,
-    enableAudio:true
+    enableAudio:true,
+    collectionName:'videos'
   }
   
