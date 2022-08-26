@@ -21,7 +21,7 @@ await init((localStream,remoteStream)=>{
   console.log('Call initiated');
   webcamVideo.srcObject = localStream;
   remoteVideo.srcObject = remoteStream;
-});
+},()=>{shareButton.remove();copyButton.remove();});
 console.log('Getting call Id...');
 const urlParams = new URLSearchParams(window.location.search);
 let callId = urlParams.get('call-id');
@@ -39,9 +39,9 @@ shareButton.onclick=()=>{
   const url= window.location.origin+'/call.html?call-id='+callId;
   window.open('whatsapp://send?text='+url); 
 }
-copyButton.onclick=()=>{
+copyButton.onclick=async()=>{
     const url= window.location.origin+'/call.html?call-id='+callId;
-    navigator.clipboard.writeText(url); 
+    await navigator.clipboard.writeText(url); 
     alert('تم نسخ الرابط');
   }
 

@@ -24,9 +24,9 @@ export const mute=(isAudio,callback)=>{
       callback(active);
 }
 
-export const init = async (callback) => {
+export const init = async (callback,answerCallback) => {
     rtc= new RTCPeerConnection(config.rtc);
-
+    config.answerCallback=answerCallback;
     config.localStream = await navigator.mediaDevices.getUserMedia({ video: config.enableVideo, audio: config.enableAudio });
     config.remoteStream = new MediaStream();
   
@@ -40,6 +40,8 @@ export const init = async (callback) => {
       event.streams[0].getTracks().forEach((track) => {
         config.remoteStream.addTrack(track);
       });
+      if(config.answerCallback)
+        config.answerCallback();
     };
     callback(config.localStream,config.remoteStream);
 };
@@ -145,12 +147,15 @@ export const answer = async (callId,callback) => {
         }
       });
     });
-    callback();
+    if(config.answerCallback)
+      config.answerCallback();
+    if(callback)
+      callback();
 };
 
 // 4. Hangup
 export const end =(callId,fromSnapshow,callback) => {
-    console.log('Ending the call..',callId);
+    console.log('Ending the call..',callId); 
     if(!fromSnapshow)
     {
         if(config.localStream){
@@ -177,6 +182,9 @@ export const end =(callId,fromSnapshow,callback) => {
     }
   if(callback)
     callback();
+  else
+      window.location.href= window.location.origin+'/thank.html';
+    
 }
 
 
