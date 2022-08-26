@@ -24,22 +24,26 @@ export const mute=(isAudio,callback)=>{
       callback(active);
 }
 
-export const init = async (callback) => {
-    rtc= new RTCPeerConnection(config.rtc);
-
-    config.localStream = await navigator.mediaDevices.getUserMedia({ video: config.enableVideo, audio: config.enableAudio });
+export const init = async (callback,answerCallback) => {
+  config.collectionName='audioes';  
+  config.enableVideo=false;
+  rtc= new RTCPeerConnection(config.rtc);
+    config.answerCallback=answerCallback;
+    config.localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: config.enableAudio });
     config.remoteStream = new MediaStream();
   
     // Push tracks from local stream to peer connection
-    config.localStream.getTracks().forEach((track) => {
+    config.localStream.getAudioTracks().forEach((track) => {
       rtc.addTrack(track, config.localStream);
     });
     
     // Pull tracks from remote stream, add to video stream
     rtc.ontrack = (event) => {
-      event.streams[0].getTracks().forEach((track) => {
+      event.streams[0].getAudioTracks().forEach((track) => {
         config.remoteStream.addTrack(track);
       });
+      if(config.answerCallback)
+        config.answerCallback();
     };
     callback(config.localStream,config.remoteStream);
 };
@@ -47,7 +51,7 @@ export const init = async (callback) => {
 // 2. Create an offer
 export const start = async (callback) => {
     // Reference Firestore collections for signaling
-    const callDoc = app.collection('calls').doc();
+    const callDoc = app.collection(config.collectionName).doc();
     const offerCandidates = callDoc.collection('offerCandidates');
     const answerCandidates = callDoc.collection('answerCandidates');
     const endedCalls = callDoc.collection('endCall');
@@ -106,7 +110,7 @@ export const start = async (callback) => {
   
 // 3. Answer the call with the unique ID
 export const answer = async (callId,callback) => {
-    const callDoc = app.collection('calls').doc(callId);
+    const callDoc = app.collection(config.collectionName).doc(callId);
     const answerCandidates = callDoc.collection('answerCandidates');
     const offerCandidates = callDoc.collection('offerCandidates');
     const endedCalls = callDoc.collection('endCall');
@@ -145,19 +149,22 @@ export const answer = async (callId,callback) => {
         }
       });
     });
-    callback();
+    if(config.answerCallback)
+      config.answerCallback();
+    if(callback)
+      callback();
 };
 
 // 4. Hangup
 export const end =(callId,fromSnapshow,callback) => {
-    console.log('Ending the call..',callId);
+    console.log('Ending the call..',callId); 
     if(!fromSnapshow)
     {
         if(config.localStream){
-        config.localStream.getTracks().forEach(track => track.stop());
+        config.localStream.getAudioTracks().forEach(track => track.stop());
         }
         if(config.remoteStream){
-            config.remoteStream.getTracks().forEach(track => track.stop())
+            config.remoteStream.getAudioTracks().forEach(track => track.stop())
         }
     
         if(rtc){
@@ -165,7 +172,7 @@ export const end =(callId,fromSnapshow,callback) => {
         }
     
         
-            const callDoc = app.collection('calls').doc(callId);
+            const callDoc = app.collection(config.collectionName).doc(callId);
             if(callDoc)
             {
                 const endedCalls = callDoc.collection('endCall');
@@ -177,7 +184,7 @@ export const end =(callId,fromSnapshow,callback) => {
     }
   if(callback)
     callback();
+  else
+      window.location.href= window.location.origin+'/thank.html';
+    
 }
-
-
-
