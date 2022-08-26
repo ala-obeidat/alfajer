@@ -1,5 +1,5 @@
 
-import {init,start,answer,end,mute} from './call'
+import {init,start,answer,end,mute} from './call.js'
 
 
  // HTML elements
@@ -36,16 +36,18 @@ if(callId){
   console.log("Id=",callId);
 }
 shareButton.onclick=()=>{
-  const url= window.location.origin+'?call-id='+callId;
+  const url= window.location.origin+'/call/'+callId;
   window.open('whatsapp://send?text='+url); 
 }
 copyButton.onclick=()=>{
-    const url= window.location.origin+'?call-id='+callId;
+    const url= window.location.origin+'/call/'+callId;
     navigator.clipboard.writeText(url); 
     alert('تم نسخ الرابط');
   }
 
-hangupButton.onclick= ()=>{ end(callId);};
+hangupButton.onclick= ()=>{ end(callId,false,()=>{
+  window.location.href= window.location.origin+'/thank';
+});};
 muteAudioButton.onclick=()=>
 { 
     mute(true,(active)=>{

@@ -1,7 +1,7 @@
-import firebase from 'firebase/app';
-import  'firebase/firestore';
+import  './firebase-app.js';
+import  './firebase.firestore.js';
 
-import { config } from './config';
+import { config } from './config.js';
 if (!firebase.apps.length) {
   firebase.initializeApp(config.firebase);
 }
@@ -149,7 +149,7 @@ export const answer = async (callId,callback) => {
 };
 
 // 4. Hangup
-export const end =(callId,fromSnapshow) => {
+export const end =(callId,fromSnapshow,callback) => {
     console.log('Ending the call..',callId);
     if(!fromSnapshow)
     {
@@ -175,8 +175,8 @@ export const end =(callId,fromSnapshow) => {
                 } 
             }
     }
-    console.log('Call ended',callId);
-    window.location.href=window.location.origin+"/thank.html";
+  if(callback)
+    callback();
 }
 
 
