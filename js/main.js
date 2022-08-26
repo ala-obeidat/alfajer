@@ -36,17 +36,17 @@ if(callId){
   console.log("Id=",callId);
 }
 shareButton.onclick=()=>{
-  const url= window.location.origin+'/call/'+callId;
+  const url= window.location.origin+'/call.html?call-id='+callId;
   window.open('whatsapp://send?text='+url); 
 }
 copyButton.onclick=()=>{
-    const url= window.location.origin+'/call/'+callId;
+    const url= window.location.origin+'/call.html?call-id='+callId;
     navigator.clipboard.writeText(url); 
     alert('تم نسخ الرابط');
   }
 
 hangupButton.onclick= ()=>{ end(callId,false,()=>{
-  window.location.href= window.location.origin+'/thank';
+  window.location.href= window.location.origin+'/thank.html';
 });};
 muteAudioButton.onclick=()=>
 { 
