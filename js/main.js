@@ -1,5 +1,5 @@
 
-import {init,start,answer,end,mute} from './call.js'
+import {init,start,answer,end,mute} from './video.js'
 
 
  // HTML elements
@@ -21,7 +21,7 @@ await init((localStream,remoteStream)=>{
   console.log('Call initiated');
   webcamVideo.srcObject = localStream;
   remoteVideo.srcObject = remoteStream;
-});
+},()=>{shareButton.remove();copyButton.remove();});
 console.log('Getting call Id...');
 const urlParams = new URLSearchParams(window.location.search);
 let callId = urlParams.get('call-id');
@@ -36,17 +36,17 @@ if(callId){
   console.log("Id=",callId);
 }
 shareButton.onclick=()=>{
-  const url= window.location.origin+'/call/'+callId;
+  const url= window.location.origin+'/video.html?call-id='+callId;
   window.open('whatsapp://send?text='+url); 
 }
-copyButton.onclick=()=>{
-    const url= window.location.origin+'/call/'+callId;
-    navigator.clipboard.writeText(url); 
+copyButton.onclick=async()=>{
+    const url= window.location.origin+'/video.html?call-id='+callId;
+    await navigator.clipboard.writeText(url); 
     alert('تم نسخ الرابط');
   }
 
 hangupButton.onclick= ()=>{ end(callId,false,()=>{
-  window.location.href= window.location.origin+'/thank';
+  window.location.href= window.location.origin+'/thank.html';
 });};
 muteAudioButton.onclick=()=>
 { 
