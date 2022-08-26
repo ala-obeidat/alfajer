@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html dir="rtl">
+<head>
+  <link rel="icon" type="image/ico" href="favicon.ico" />
+  <title>مشروع الفجر</title> 
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="اتصال فيديو مجاني وآمن">
+   <link rel="stylesheet" href="./css/styles.css">
+  <meta charset="utf-8">
+  <script src="https://kit.fontawesome.com/35896a0ce6.js" crossorigin="anonymous"></script>
+  
+</head>
+
+<body>
+  <h1 id="title">مشروع الفجر - اتصال فيديو مجاني وآمن</h1>
+  <div id="video_display" style="padding-left: 3px;">
+    
+    <div id ="video_container" class="videos">
+      <div class="local_div" id="div1">
+				<video id="webcamVideo"  class="" autoplay playsinline></video>
+			</div>
+			<div class="remote_div" id="div2">
+				<video id="remoteVideo" class="" autoplay playsinline></video>
+			</div>
+    </div>
+    <div class="controlles">
+      <a id="muteVideo" class="btn_option active" title="كتم الفيديو"><i id="muteVideoIcon" class="fas fa-video"></i></a>
+      <a id="muteAudio" class="btn_option active" title="كتم الصوت"><i id="muteAudioIcon" class="fas fa-microphone"></i></a>
+      <a id="hangupButton" class="btn_option"  title="إنهاء المكالمة"><i class="fas fa-phone-slash"></i></a>
+      <a id="shareButton" class="btn_option active" title="مشاركة بالواتس"><i class="fab fa-whatsapp"></i></a>
+      <a id="copyButton" class="btn_option active" title="نسخ الرابط"><i class="fa fa-link"></i></a>
+     </div>
+  </div> 
+  
+
+  <script type="module" src="js/main.js"></script>
+  
+</body>
+
+</html>
