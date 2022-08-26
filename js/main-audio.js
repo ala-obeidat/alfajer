@@ -1,4 +1,5 @@
 
+import { config } from './config.js';
 import {init,start,answer,end,mute} from './video.js'
 
 
@@ -6,14 +7,13 @@ import {init,start,answer,end,mute} from './video.js'
 const webcamVideo = document.getElementById('webcamVideo');
 const remoteVideo = document.getElementById('remoteVideo');
 const muteAudioButton = document.getElementById('muteAudio');
-const muteVideoButton = document.getElementById('muteVideo');
 
 const muteAudioIcon = document.getElementById('muteAudioIcon');
-const muteVideoIcon = document.getElementById('muteVideoIcon');
 
 const hangupButton = document.getElementById('hangupButton');
 const shareButton = document.getElementById('shareButton');
 const copyButton = document.getElementById('copyButton');
+const speakerButton = document.getElementById('speaker');
 
 
 // 1. Setup media sources
@@ -36,11 +36,12 @@ if(callId){
   console.log("Id=",callId);
 }
 shareButton.onclick=()=>{
-  const url= window.location.origin+'/video.html?call-id='+callId;
+  const url= window.location.origin+'/audio.html?call-id='+callId;
   window.open('whatsapp://send?text='+url); 
 }
+
 copyButton.onclick=async()=>{
-    const url= window.location.origin+'/video.html?call-id='+callId;
+    const url= window.location.origin+'/audio.html?call-id='+callId;
     await navigator.clipboard.writeText(url); 
     alert('تم نسخ الرابط');
   }
@@ -61,17 +62,50 @@ muteAudioButton.onclick=()=>
         muteAudioButton.className='btn_option active';  
         }
     });
-};
-muteVideoButton.onclick=()=>{ 
-    mute(false,(active)=>{
-        if(active)
-        {
-            muteVideoIcon.className='fas fa-video-slash';
-            muteVideoButton.className='btn_option';
-        }else
-        {
-            muteVideoIcon.className='fas fa-video';
-            muteVideoButton.className='btn_option active';  
-        }
-    });
-};
+};  
+speakerButton.onclick = async ()=>{
+  let i=0;
+  if(speakerButton.className.indexOf('active')==-1)
+  {
+    i=1;
+    speakerButton.className='active';
+  }
+  else{
+    speakerButton.className='';
+  }
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  
+  const outAudioDevices = devices.filter(device => device.kind === 'audiooutput');
+  const audioDevices = devices.filter(device => device.kind === 'audioinput');
+  if (!audioDevices[i] || !outAudioDevices[i]){
+   console.log('No devices');
+    return;
+  }
+  const outDeviceId=outAudioDevices[2].deviceId;
+  const deviceId = audioDevices[i].deviceId;
+  config.localStream.getAudioTracks().forEach((track) => {
+    track.stop();
+  });
+  // config.remoteStream.getAudioTracks().forEach((track) => {
+  //   track.stop();
+  // });
+  
+  const constraints = {
+    audio: {deviceId: {exact: deviceId}}
+  }; 
+  console.log(outAudioDevices[i]);
+  await remoteVideo.setSinkId(outDeviceId).catch(handleError);
+  navigator.mediaDevices.getUserMedia(constraints).then(gotStream).catch(handleError);
+  
+}
+
+
+function gotStream(stream) {
+  // Refresh button list in case labels have become available
+  return navigator.mediaDevices.enumerateDevices();
+}
+function handleError(error) {
+
+  console.log('navigator.MediaDevices.getUserMedia error: ', error);
+
+}

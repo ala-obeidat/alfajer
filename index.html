@@ -10,16 +10,21 @@
     <script src="https://kit.fontawesome.com/35896a0ce6.js" crossorigin="anonymous"></script>
 </head>
 <body>
-    <img src="favicon.ico" alt="" width="200">
+    <img src="favicon.ico" alt="" width="150">
     
-    <h2>مشروع الفجر هو مشروع لإتصال فيديو مجاني وأمن بين طرفين</h2>
-    <button onclick="moveToCall()">إنشاء محادثة</button>    
+    <h2>مشروع الفجر هو مشروع لإتصال مجاني وآمن بين طرفين</h2>
+    <button onclick="moveToVideo()">فيديو</button>    &nbsp;&nbsp;
+    <button onclick="moveToAudio()">صوت فقط</button>    
     <div style="position: fixed;bottom: 12px;background-color:black;color:white;clear:both;text-align:center;padding: 15px;font-size: 21px;margin: 0 auto;width: 88%;">
-        Copy right :  Ala Obeidat @ 2022 
+        الحقوق محفوظة @ علاء عبيدات
     </div>
     <script>
-        function moveToCall(){
-            window.location.href=window.location.origin+'/call.html';
+        function moveToVideo(){
+            window.location.href=window.location.origin+'/video.html';
+        }
+        
+        function moveToAudio(){
+            window.location.href=window.location.origin+'/audio.html';
         }
     </script>
 </body>
