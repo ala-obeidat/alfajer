@@ -1,39 +1,46 @@
-import  './firebase-app.js';
-import  './firebase.firestore.js';
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.9.3/firebase-app.js';
+import { getFirestore,
+  collection,
+  doc,
+  getDoc,
+  setDoc,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot } from 'https://www.gstatic.com/firebasejs/9.9.3/firebase-firestore.js'
 
 import { config } from './config.js';
-if (!firebase.apps.length) {
-  firebase.initializeApp(config.firebase);
-}
-const app=firebase.firestore();
+const app=initializeApp(config.firebase);
+const db=getFirestore(app);
 let rtc=null;
 export const mute=(isAudio,callback)=>{
     let active=false;
     if(isAudio){
         config.localStream.getAudioTracks().forEach((track) => {
-            track.enabled =config.enableAudio;
-            active=config.enableAudio=!config.enableAudio;
+          active=config.enableAudio=!config.enableAudio;  
+          track.enabled =config.enableAudio;
+            
         });
     }else{
         config.localStream.getVideoTracks().forEach((track) => {
-            track.enabled =config.enableVideo;
+            
             active=config.enableVideo=!config.enableVideo;
+            track.enabled =config.enableVideo;
         });
     }
     if(callback)
       callback(active);
 }
 
-export const init = async (callback,answerCallback) => {
-  config.collectionName='audioes';  
-  config.enableVideo=false;
+export const init = async (enableVideo,callback,answerCallback) => {
+  config.enableVideo=enableVideo;
   rtc= new RTCPeerConnection(config.rtc);
     config.answerCallback=answerCallback;
-    config.localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: config.enableAudio });
+    config.localStream = await navigator.mediaDevices.getUserMedia({ video: config.enableVideo, audio: config.enableAudio });
     config.remoteStream = new MediaStream();
   
     // Push tracks from local stream to peer connection
-    config.localStream.getAudioTracks().forEach((track) => {
+    config.localStream.getTracks().forEach((track) => {
       rtc.addTrack(track, config.localStream);
     });
     
@@ -51,15 +58,15 @@ export const init = async (callback,answerCallback) => {
 // 2. Create an offer
 export const start = async (callback) => {
     // Reference Firestore collections for signaling
-    const callDoc = app.collection(config.collectionName).doc();
-    const offerCandidates = callDoc.collection('offerCandidates');
-    const answerCandidates = callDoc.collection('answerCandidates');
-    const endedCalls = callDoc.collection('endCall');
+    const callDoc = doc(collection(db, config.collectionName));
+    const answerCandidates = collection(callDoc,'answerCandidates');
+    const offerCandidates = collection(callDoc,'offerCandidates');
+    const endedCalls = collection(callDoc,'endCall');
     const callId = callDoc.id;
     
     // Get candidates for caller, save to db
     rtc.onicecandidate = (event) => {
-      event.candidate && offerCandidates.add(event.candidate.toJSON());
+      event.candidate && addDoc(offerCandidates, event.candidate.toJSON());
     };
   
     // Create offer
@@ -70,20 +77,18 @@ export const start = async (callback) => {
       sdp: offerDescription.sdp,
       type: offerDescription.type,
     };
-  
-    await callDoc.set({ offer });
+    await setDoc(callDoc, { offer });
   
     // Listen for remote answer
-    callDoc.onSnapshot((snapshot) => {
+    onSnapshot(callDoc,(snapshot) => {
       const data = snapshot.data();
       if (!rtc.currentRemoteDescription && data?.answer) {
         const answerDescription = new RTCSessionDescription(data.answer);
         rtc.setRemoteDescription(answerDescription);
       }
     });
-  
     // When answered, add candidate to peer connection
-    answerCandidates.onSnapshot((snapshot) => {
+    onSnapshot(answerCandidates,(snapshot) => {
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added') {
             const candidate = new RTCIceCandidate(change.doc.data());
@@ -93,8 +98,7 @@ export const start = async (callback) => {
         }
       });
     });
-
-    endedCalls.onSnapshot((snapshot) => {
+    onSnapshot(endedCalls,(snapshot) => {
         snapshot.docChanges().forEach((change) => {
           if (change.type === 'added') {
               const id=change.doc.data().id;
@@ -110,14 +114,14 @@ export const start = async (callback) => {
   
 // 3. Answer the call with the unique ID
 export const answer = async (callId,callback) => {
-    const callDoc = app.collection(config.collectionName).doc(callId);
-    const answerCandidates = callDoc.collection('answerCandidates');
-    const offerCandidates = callDoc.collection('offerCandidates');
-    const endedCalls = callDoc.collection('endCall');
+    const callDoc = doc(db, config.collectionName, callId);
+    const answerCandidates = collection(callDoc,'answerCandidates');
+    const offerCandidates = collection(callDoc,'offerCandidates');
+    const endedCalls = collection(callDoc,'endCall');
     rtc.onicecandidate = (event) => {
-      event.candidate && answerCandidates.add(event.candidate.toJSON());
+      event.candidate  && addDoc(answerCandidates, event.candidate.toJSON());
     };
-    endedCalls.onSnapshot((snapshot) => {
+    onSnapshot(endedCalls,(snapshot) => {
         snapshot.docChanges().forEach((change) => {
           if (change.type === 'added') {
               const id=change.doc.data().id;
@@ -126,7 +130,7 @@ export const answer = async (callId,callback) => {
           }
         });
     });
-    const callData = (await callDoc.get()).data();
+    const callData = (await getDoc(callDoc)).data();
   
     const offerDescription = callData.offer;
     await rtc.setRemoteDescription(new RTCSessionDescription(offerDescription));
@@ -139,9 +143,8 @@ export const answer = async (callId,callback) => {
       sdp: answerDescription.sdp,
     };
   
-    await callDoc.update({ answer });
-  
-    offerCandidates.onSnapshot((snapshot) => {
+    await updateDoc(callDoc, { answer });
+    onSnapshot(offerCandidates, (snapshot) => {
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added') {
             let data = change.doc.data();
@@ -156,15 +159,15 @@ export const answer = async (callId,callback) => {
 };
 
 // 4. Hangup
-export const end =(callId,fromSnapshow,callback) => {
+export const end =async (callId,fromSnapshow,callback) => {
     console.log('Ending the call..',callId); 
     if(!fromSnapshow)
     {
         if(config.localStream){
-        config.localStream.getAudioTracks().forEach(track => track.stop());
+        config.localStream.getTracks().forEach(track => track.stop());
         }
         if(config.remoteStream){
-            config.remoteStream.getAudioTracks().forEach(track => track.stop())
+            config.remoteStream.getTracks().forEach(track => track.stop())
         }
     
         if(rtc){
@@ -172,15 +175,8 @@ export const end =(callId,fromSnapshow,callback) => {
         }
     
         
-            const callDoc = app.collection(config.collectionName).doc(callId);
-            if(callDoc)
-            {
-                const endedCalls = callDoc.collection('endCall');
-                if(endedCalls)
-                {
-                    endedCalls.add({id:callId});
-                } 
-            }
+        const callDoc = doc(db, config.collectionName, callId);
+        await deleteDoc(callDoc);
     }
   if(callback)
     callback();

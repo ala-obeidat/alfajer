@@ -1,6 +1,6 @@
 
 import { config } from './config.js';
-import {init,start,answer,end,mute} from './video.js'
+import {init,start,answer,end,mute} from './call.js'
 
 
  // HTML elements
@@ -17,7 +17,7 @@ const speakerButton = document.getElementById('speaker');
 
 
 // 1. Setup media sources
-await init((localStream,remoteStream)=>{
+await init(false,(localStream,remoteStream)=>{
   console.log('Call initiated');
   webcamVideo.srcObject = localStream;
   remoteVideo.srcObject = remoteStream;
@@ -45,8 +45,10 @@ copyButton.onclick=async()=>{
     await navigator.clipboard.writeText(url); 
     alert('تم نسخ الرابط');
   }
-
-hangupButton.onclick= ()=>{ end(callId,false,()=>{
+  window.addEventListener('beforeunload', ()=>{
+    hangupButton.click();
+  });
+hangupButton.onclick=async ()=>{ await end(callId,false,()=>{
   window.location.href= window.location.origin+'/thank.html';
 });};
 muteAudioButton.onclick=()=>
