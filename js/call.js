@@ -122,8 +122,11 @@ export const start = async (callback) => {
 // 3. Answer the call with the unique ID
 export const answer = async (callId,callback) => {
     const callDoc = doc(db, collectionName, callId);
+    if(!callDoc || callDoc.id!=callId){
+      return false;
+    }
     const callData = (await getDoc(callDoc)).data();
-    if(callData.status!=='started'){
+    if(!callData || callData.status!=='started'){
       return false;
     }
     const answerCandidates = collection(callDoc,'answerCandidates');
