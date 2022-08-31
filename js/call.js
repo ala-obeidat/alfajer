@@ -55,12 +55,7 @@ export const init = async (enableVideo,callback,answerCallback) => {
     };
     callback(config.localStream,config.remoteStream);
 };
-const deleteCallDocument=async (callId)=>{
-  if(config.production && callId){
-    const callDoc = doc(db, collectionName, callId);
-    await deleteDoc(callDoc);
-  }
-}
+
 // 2. Create an offer
 export const start = async (callback) => {
     // Reference Firestore collections for signaling
@@ -108,8 +103,6 @@ export const start = async (callback) => {
         if (change.type === 'added') {
             const candidate = new RTCIceCandidate(change.doc.data());
             rtc.addIceCandidate(candidate);
-        }else{
-            console.log('alaa',change.type);
         }
       });
     });
@@ -164,7 +157,6 @@ export const answer = async (callId,callback) => {
     });
     onSnapshot(callDoc,(snapshot) => {
       const data = snapshot.data();
-      console.log('Update document collection',data);
       if(data.status==='ended'){
         end();
       }
