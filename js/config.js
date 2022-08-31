@@ -18,12 +18,12 @@ const firebaseConfig = {
   };
  
   export  const config={
+    production:true,
     rtc:servers,
     firebase:firebaseConfig,
     localStream: null,
     remoteStream:null,
     enableVideo:true,
-    enableAudio:true,
-    collectionName:'videos'
+    enableAudio:true
   }
   

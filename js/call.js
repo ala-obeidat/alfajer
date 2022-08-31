@@ -11,6 +11,7 @@ import { getFirestore,
 
 import { config } from './config.js';
 const app=initializeApp(config.firebase);
+const collectionName='calls';
 const db=getFirestore(app);
 let rtc=null;
 export const mute=(isAudio,callback)=>{
@@ -33,8 +34,8 @@ export const mute=(isAudio,callback)=>{
 }
 
 export const init = async (enableVideo,callback,answerCallback) => {
-  config.enableVideo=enableVideo;
-  rtc= new RTCPeerConnection(config.rtc);
+    config.enableVideo=enableVideo;
+    rtc= new RTCPeerConnection(config.rtc);
     config.answerCallback=answerCallback;
     config.localStream = await navigator.mediaDevices.getUserMedia({ video: config.enableVideo, audio: config.enableAudio });
     config.remoteStream = new MediaStream();
@@ -46,7 +47,7 @@ export const init = async (enableVideo,callback,answerCallback) => {
     
     // Pull tracks from remote stream, add to video stream
     rtc.ontrack = (event) => {
-      event.streams[0].getAudioTracks().forEach((track) => {
+      event.streams[0].getTracks().forEach((track) => {
         config.remoteStream.addTrack(track);
       });
       if(config.answerCallback)
@@ -54,16 +55,22 @@ export const init = async (enableVideo,callback,answerCallback) => {
     };
     callback(config.localStream,config.remoteStream);
 };
-  
+const deleteCallDocument=async (callId)=>{
+  if(config.production && callId){
+    const callDoc = doc(db, collectionName, callId);
+    await deleteDoc(callDoc);
+  }
+}
 // 2. Create an offer
 export const start = async (callback) => {
     // Reference Firestore collections for signaling
-    const callDoc = doc(collection(db, config.collectionName));
+    const callDoc = doc(collection(db, collectionName));
     const answerCandidates = collection(callDoc,'answerCandidates');
     const offerCandidates = collection(callDoc,'offerCandidates');
-    const endedCalls = collection(callDoc,'endCall');
     const callId = callDoc.id;
-    
+    setTimeout(async ()=>{
+      deleteCallDocument(callId);
+    },60000);
     // Get candidates for caller, save to db
     rtc.onicecandidate = (event) => {
       event.candidate && addDoc(offerCandidates, event.candidate.toJSON());
@@ -73,18 +80,28 @@ export const start = async (callback) => {
     const offerDescription = await rtc.createOffer();
     await rtc.setLocalDescription(offerDescription);
   
-    const offer = {
+    const offerObj = {
       sdp: offerDescription.sdp,
       type: offerDescription.type,
     };
-    await setDoc(callDoc, { offer });
-  
+    const callObj={
+      type:config.enableVideo?'video':'audio',
+      offer:offerObj,
+      status:'started',
+      createdTime:getCurrentDate(),
+    }
+    await setDoc(callDoc,  callObj );
+    
     // Listen for remote answer
     onSnapshot(callDoc,(snapshot) => {
       const data = snapshot.data();
       if (!rtc.currentRemoteDescription && data?.answer) {
+        console.log('Get answer',data);
         const answerDescription = new RTCSessionDescription(data.answer);
         rtc.setRemoteDescription(answerDescription);
+      }
+      if(data.status==='ended'){
+        end();
       }
     });
     // When answered, add candidate to peer connection
@@ -98,15 +115,7 @@ export const start = async (callback) => {
         }
       });
     });
-    onSnapshot(endedCalls,(snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          if (change.type === 'added') {
-              const id=change.doc.data().id;
-              console.log('ended',id);
-               end(id,true);
-          }
-        });
-    });
+    
     
     callback();
     return callId;
@@ -114,22 +123,14 @@ export const start = async (callback) => {
   
 // 3. Answer the call with the unique ID
 export const answer = async (callId,callback) => {
-    const callDoc = doc(db, config.collectionName, callId);
+    const callDoc = doc(db, collectionName, callId);
     const answerCandidates = collection(callDoc,'answerCandidates');
     const offerCandidates = collection(callDoc,'offerCandidates');
-    const endedCalls = collection(callDoc,'endCall');
+    
     rtc.onicecandidate = (event) => {
       event.candidate  && addDoc(answerCandidates, event.candidate.toJSON());
     };
-    onSnapshot(endedCalls,(snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          if (change.type === 'added') {
-              const id=change.doc.data().id;
-              console.log('ended',id);
-              end(id,true);
-          }
-        });
-    });
+   
     const callData = (await getDoc(callDoc)).data();
   
     const offerDescription = callData.offer;
@@ -138,12 +139,16 @@ export const answer = async (callId,callback) => {
     const answerDescription = await rtc.createAnswer();
     await rtc.setLocalDescription(answerDescription);
   
-    const answer = {
+    const answerObj = {
       type: answerDescription.type,
       sdp: answerDescription.sdp,
     };
-  
-    await updateDoc(callDoc, { answer });
+    const callObj={
+      answer:answerObj,
+      status:'answered',
+      answerTime: getCurrentDate(),
+    }
+    await updateDoc(callDoc, callObj);
     onSnapshot(offerCandidates, (snapshot) => {
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added') {
@@ -152,6 +157,13 @@ export const answer = async (callId,callback) => {
         }
       });
     });
+    onSnapshot(callDoc,(snapshot) => {
+      const data = snapshot.data();
+      console.log('Update document collection',data);
+      if(data.status==='ended'){
+        end();
+      }
+    });
     if(config.answerCallback)
       config.answerCallback();
     if(callback)
@@ -159,28 +171,32 @@ export const answer = async (callId,callback) => {
 };
 
 // 4. Hangup
-export const end =async (callId,fromSnapshow,callback) => {
+export const end =async (callId) => {
     console.log('Ending the call..',callId); 
-    if(!fromSnapshow)
-    {
-        if(config.localStream){
-        config.localStream.getTracks().forEach(track => track.stop());
-        }
-        if(config.remoteStream){
-            config.remoteStream.getTracks().forEach(track => track.stop())
-        }
+    
+    if(config.localStream){
+      config.localStream.getTracks().forEach(track => track.stop());
+    }
+    if(config.remoteStream){
+      config.remoteStream.getTracks().forEach(track => track.stop())
+    }
     
         if(rtc){
             rtc.close();
         }
-    
-        
-        const callDoc = doc(db, config.collectionName, callId);
-        await deleteDoc(callDoc);
-    }
-  if(callback)
-    callback();
-  else
+        if(callId)
+        {
+          const callDoc = doc(db, collectionName, callId);
+          const callObj={
+            status:'ended',
+            endTime:getCurrentDate()
+          }
+          await updateDoc(callDoc,  callObj );
+        }
       window.location.href= window.location.origin+'/thank.html';
     
+}
+const getCurrentDate=()=>{
+  const date=new Date;
+  return date;
 }
