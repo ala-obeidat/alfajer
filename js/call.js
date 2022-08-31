@@ -122,6 +122,10 @@ export const start = async (callback) => {
 // 3. Answer the call with the unique ID
 export const answer = async (callId,callback) => {
     const callDoc = doc(db, collectionName, callId);
+    const callData = (await getDoc(callDoc)).data();
+    if(callData.status!=='started'){
+      return false;
+    }
     const answerCandidates = collection(callDoc,'answerCandidates');
     const offerCandidates = collection(callDoc,'offerCandidates');
     
@@ -129,7 +133,7 @@ export const answer = async (callId,callback) => {
       event.candidate  && addDoc(answerCandidates, event.candidate.toJSON());
     };
    
-    const callData = (await getDoc(callDoc)).data();
+    
   
     const offerDescription = callData.offer;
     await rtc.setRemoteDescription(new RTCSessionDescription(offerDescription));
@@ -166,6 +170,7 @@ export const answer = async (callId,callback) => {
       config.answerCallback();
     if(callback)
       callback();
+    return true;
 };
 
 // 4. Hangup
