@@ -27,10 +27,14 @@ console.log('Getting call Id...');
 const urlParams = new URLSearchParams(window.location.search);
 let callId = urlParams.get('call-id');
 if(callId){
- console.log('Call Id is:',callId);
- await answer(callId,()=>{
-   console.log('Call Answered:',callId);
- });
+  console.log('Call Id is:',callId);
+  var answerResult =await answer(callId,()=>{
+    console.log('Call Answered:',callId);
+  });
+  if(!answerResult){
+    alert('مكالمة مغلقة');
+    window.location.href= window.location.origin+'/thank.html';
+  }
 }else{
  console.log('This is new call');
  callId=await start(()=>{
