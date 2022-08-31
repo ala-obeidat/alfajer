@@ -15,7 +15,8 @@ const hangupButton = document.getElementById('hangupButton');
 const shareButton = document.getElementById('shareButton');
 const copyButton = document.getElementById('copyButton');
 
-
+shareButton.style.display='none';
+    copyButton.style.display='none';
 // 1. Setup media sources
 await init(true,(localStream,remoteStream)=>{
   console.log('Call initiated');
@@ -32,7 +33,11 @@ if(callId){
   });
 }else{
   console.log('This is new call');
-  callId=await start(()=>console.log('Call Started'));
+  callId=await start(()=>{
+    console.log('Call Started');
+    shareButton.style.display='inline-block';
+    copyButton.style.display='inline-block';
+  });
   console.log("Id=",callId);
 }
 shareButton.onclick=()=>{
@@ -45,7 +50,7 @@ copyButton.onclick=async()=>{
     alert('تم نسخ الرابط');
   }
 
-  hangupButton.onclick=async ()=>{ await end(callId,false,()=>{
+  hangupButton.onclick=async ()=>{ await end(callId,()=>{
     window.location.href= window.location.origin+'/thank.html';
   });};
 window.addEventListener('beforeunload', ()=>{
@@ -56,12 +61,12 @@ muteAudioButton.onclick=()=>
     mute(true,(active)=>{
         if(active)
         {
-            muteAudioIcon.className='fas fa-microphone-slash';
-            muteAudioButton.className='btn_option';
+          muteAudioIcon.className='fas fa-microphone';
+          muteAudioButton.className='btn_option active';    
         }else
         {
-        muteAudioIcon.className='fas fa-microphone';
-        muteAudioButton.className='btn_option active';  
+          muteAudioIcon.className='fas fa-microphone-slash';
+          muteAudioButton.className='btn_option';
         }
     });
 };
@@ -69,12 +74,12 @@ muteVideoButton.onclick=()=>{
     mute(false,(active)=>{
         if(active)
         {
-            muteVideoIcon.className='fas fa-video-slash';
-            muteVideoButton.className='btn_option';
+          muteVideoIcon.className='fas fa-video';
+          muteVideoButton.className='btn_option active';  
         }else
         {
-            muteVideoIcon.className='fas fa-video';
-            muteVideoButton.className='btn_option active';  
+            muteVideoIcon.className='fas fa-video-slash';
+            muteVideoButton.className='btn_option';
         }
     });
 };
