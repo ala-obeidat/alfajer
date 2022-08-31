@@ -14,30 +14,34 @@ const app=initializeApp(config.firebase);
 const collectionName='calls';
 const db=getFirestore(app);
 let rtc=null;
+export const initStream=(isVideo)=>{
+  config.enableVideo=isVideo;
+}
+let openVideo=true;
+let openAudio=true;
 export const mute=(isAudio,callback)=>{
     let active=false;
     if(isAudio){
         config.localStream.getAudioTracks().forEach((track) => {
-          active=config.enableAudio=!config.enableAudio;  
-          track.enabled =config.enableAudio;
-            
+          openAudio=!openAudio;
+          active=openAudio;  
+          track.enabled =openAudio;
         });
     }else{
         config.localStream.getVideoTracks().forEach((track) => {
-            
-            active=config.enableVideo=!config.enableVideo;
-            track.enabled =config.enableVideo;
+          openVideo=!openVideo;
+          active=openVideo;  
+          track.enabled =openVideo;
         });
     }
     if(callback)
       callback(active);
 }
 
-export const init = async (enableVideo,callback,answerCallback) => {
-    config.enableVideo=enableVideo;
+export const init = async (callback,answerCallback) => {
     rtc= new RTCPeerConnection(config.rtc);
     config.answerCallback=answerCallback;
-    config.localStream = await navigator.mediaDevices.getUserMedia({ video: config.enableVideo, audio: config.enableAudio });
+    config.localStream = await navigator.mediaDevices.getUserMedia({ video: config.enableVideo, audio: true });
     config.remoteStream = new MediaStream();
   
     // Push tracks from local stream to peer connection
@@ -46,7 +50,7 @@ export const init = async (enableVideo,callback,answerCallback) => {
     });
     
     // Pull tracks from remote stream, add to video stream
-    rtc.ontrack = (event) => {
+    rtc.ontrack = (event) => { 
       event.streams[0].getTracks().forEach((track) => {
         config.remoteStream.addTrack(track);
       });
