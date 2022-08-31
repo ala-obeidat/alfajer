@@ -68,9 +68,7 @@ export const start = async (callback) => {
     const answerCandidates = collection(callDoc,'answerCandidates');
     const offerCandidates = collection(callDoc,'offerCandidates');
     const callId = callDoc.id;
-    setTimeout(async ()=>{
-      deleteCallDocument(callId);
-    },60000);
+    
     // Get candidates for caller, save to db
     rtc.onicecandidate = (event) => {
       event.candidate && addDoc(offerCandidates, event.candidate.toJSON());
