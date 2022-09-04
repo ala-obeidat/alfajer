@@ -1,33 +1,53 @@
-
-import {init,start,answer,end,mute,initStream} from './call.js'
+import WebRTC from  './call.js'
+let webRTCObject;
+let callId='';
 let pageName='audio';
-let callId ='';
-export const openCall= async(hasVideo)=>{
-  initStream(hasVideo);
-  if(hasVideo)
-  pageName='video';
-  console.log('Getting call Id...');
-const urlParams = new URLSearchParams(window.location.search);
-callId = urlParams.get('call-id');
-if(callId){
-  console.log('Call Id is:',callId);
-  var answerResult =await answer(callId,()=>{
-    console.log('Call Answered:',callId);
-  });
-  if(!answerResult){
-    alert('مكالمة مغلقة');
-    window.location.href= window.location.origin+'/thank.html';
+export default class MakeCall{
+  pageName;
+  callId;
+  webRTC;
+  constructor(hasVideo){
+    this.pageName='audio';
+    this.callId ='';
+    this.webRTC=new WebRTC(hasVideo);
+    if(hasVideo)
+      this.pageName='video';
+    shareButton.style.display='none';
+    copyButton.style.display='none'; 
   }
-}else{
-  console.log('This is new call');
-  callId=await start(()=>{
-    console.log('Call Started');
-    shareButton.style.display='inline-block';
-    copyButton.style.display='inline-block';
-  });
-  console.log("Id=",callId);
+  start = async()=>{
+    await this.webRTC.init((localStream,remoteStream)=>{
+      console.log('Call initiated');
+      webcamVideo.srcObject = localStream;
+      remoteVideo.srcObject = remoteStream;
+    },()=>{shareButton.remove();copyButton.remove();});
+    console.log('Getting call Id...');
+    const urlParams = new URLSearchParams(window.location.search);
+    this.callId = urlParams.get('call-id');
+    if(this.callId){
+      console.log('Call Id is:',this.callId);
+      var answerResult =await this.webRTC.answer(this.callId,()=>{
+        console.log('Call Answered:',this.callId);
+      });
+      if(!answerResult){
+        alert('مكالمة مغلقة');
+        window.location.href= window.location.origin+'/thank.html';
+      }
+    }else{
+      console.log('This is new call');
+      this.callId=await this.webRTC.start(()=>{
+        console.log('Call Started');
+        shareButton.style.display='inline-block';
+        copyButton.style.display='inline-block';
+      });
+      console.log("Id=",this.callId);
+    }
+    callId=this.callId;
+    webRTCObject=this.webRTC;
+    pageName=this.pageName;
+  }
 }
-}
+  
  // HTML elements
 const webcamVideo = document.getElementById('webcamVideo');
 const remoteVideo = document.getElementById('remoteVideo');
@@ -41,13 +61,8 @@ const hangupButton = document.getElementById('hangupButton');
 const shareButton = document.getElementById('shareButton');
 const copyButton = document.getElementById('copyButton');
 
-shareButton.style.display='none';
-    copyButton.style.display='none'; 
-await init((localStream,remoteStream)=>{
-  console.log('Call initiated');
-  webcamVideo.srcObject = localStream;
-  remoteVideo.srcObject = remoteStream;
-},()=>{shareButton.remove();copyButton.remove();});
+
+
 
 shareButton.onclick=()=>{
   const url= window.location.origin+'/'+pageName+'.html?call-id='+callId;
@@ -59,7 +74,7 @@ copyButton.onclick=async()=>{
     alert('تم نسخ الرابط');
   }
 
-  hangupButton.onclick=async ()=>{ await end(callId,()=>{
+  hangupButton.onclick=async ()=>{ await webRTCObject.end(callId,()=>{
     window.location.href= window.location.origin+'/thank.html';
   });};
 window.addEventListener('beforeunload', ()=>{
@@ -67,7 +82,7 @@ window.addEventListener('beforeunload', ()=>{
 });
 muteAudioButton.onclick=()=>
 { 
-    mute(true,(active)=>{
+  webRTCObject.mute(true,(active)=>{
         if(active)
         {
           muteAudioIcon.className='fas fa-microphone';
@@ -80,7 +95,7 @@ muteAudioButton.onclick=()=>
     });
 };
 muteVideoButton.onclick=()=>{ 
-    mute(false,(active)=>{
+  webRTCObject.mute(false,(active)=>{
         if(active)
         {
           muteVideoIcon.className='fas fa-video';

@@ -1,2 +1,3 @@
-import {openCall} from './main.js'
-await openCall(false);
+
+import MakeCall from './main.js'
+await new MakeCall(false).start();
