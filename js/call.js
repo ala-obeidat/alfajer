@@ -6,7 +6,6 @@ import { getFirestore,
   setDoc,
   addDoc,
   updateDoc,
-  deleteDoc,
   onSnapshot } from 'https://www.gstatic.com/firebasejs/9.9.3/firebase-firestore.js'
 
 import { config } from './config.js';
