@@ -1,0 +1,24 @@
+{
+  "name": "firebase-rtc",
+  "version": "1.0.0",
+  "description": "WebRTC confirance call wrapper with firebase(firestore) to handle signaling",
+  "main": "index.js",
+  "scripts": {
+    "test": "node index.js"
+  },
+  "keywords": [
+    "WebRTC",
+    "RTC",
+    "Web",
+    "Call",
+    "Video",
+    "Audio",
+    "Firebase",
+    "Firestore"
+  ],
+  "author": "Ala Obeidat",
+  "license": "MIT",
+  "dependencies": {
+    "firebase": "^9.9.4"
+  }
+}
