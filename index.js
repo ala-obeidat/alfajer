@@ -9,7 +9,7 @@ import {
   updateDoc,
   onSnapshot,
 } from "firebase/firestore";
-export const config = {
+export const options = {
   iceServersUrls: [],
   firebaseConfig: {},
   hasVideo: true,
@@ -25,18 +25,44 @@ let rtcServers = {
 let endFun;
 let variables = {};
 let callEnded = false;
+
+/**
+ * Creates and initializes a {@link @firebase-rtc} instance.
+ *
+ * @example
+ * ```javascript
+ *
+ * // Initialize default app
+ * const callApp = new WebRTC({
+ *   firebaseConfig:{
+ *      apiKey: "AIza....",                             // Auth / General Use
+ *      authDomain: "YOUR_APP.firebaseapp.com",         // Auth with popup/redirect
+ *      databaseURL: "https://YOUR_APP.firebaseio.com", // Realtime Database
+ *      storageBucket: "YOUR_APP.appspot.com",          // Storage
+ *      messagingSenderId: "123456789"                  // Cloud Messaging
+ *   },
+ *   iceServersUrls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'],
+ *   hasVideo:true
+ * });
+ * ```  
+ *
+ * @param options - Options to configure the app's services.
+ * @returns The initialized app.
+ *
+ * @public
+ */
 export default class WebRTC {
   collectionName;
   db;
   rtc;
   openVideo;
   openAudio;
-  constructor(config) {
+  constructor(options) {
     this.collectionName = "calls";
-    this.db = getFirestore(initializeApp(config.firebaseConfig));
+    this.db = getFirestore(initializeApp(options.firebaseConfig));
     this.rtc = null;
-    rtcServers.iceServers.urls = config.iceServersUrls;
-    variables.enableVideo = isVideo;
+    rtcServers.iceServers.urls = options.iceServersUrls;
+    variables.enableVideo = options.hasVideo;
     this.openVideo = true;
     this.openAudio = true;
   }
