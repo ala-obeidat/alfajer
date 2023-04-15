@@ -1,3 +1,4 @@
+import { getAuth,signInAnonymously  } from 'https://www.gstatic.com/firebasejs/9.9.3/firebase-auth.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.9.3/firebase-app.js';
 import { getFirestore,
   collection,
@@ -12,10 +13,12 @@ import { config } from './config.js';
 let endFun;
 let callEnded=false;
 export default class WebRTC{
-  collectionName;db;rtc;openVideo;openAudio;
+  collectionName;db;rtc;openVideo;openAudio;auth;
   constructor(isVideo) {
     this.collectionName='calls';
-    this.db=getFirestore(initializeApp(config.firebase));
+    const app=initializeApp(config.firebase);
+    this.auth=getAuth(app);
+    this.db=getFirestore(app);
     this.rtc=null;
     config.enableVideo=isVideo;
     this.openVideo=true;
@@ -72,6 +75,9 @@ export default class WebRTC{
       callback(active);
   };
   init = async (callback,answerCallback) => {
+    var responseResult=await signInAnonymously(this.auth);
+    console.log("Signed in as anonymous user:", responseResult.user);
+
     this.rtc= new RTCPeerConnection(config.rtc);
     config.answerCallback=answerCallback;
     config.localStream = await navigator.mediaDevices.getUserMedia({ video: config.enableVideo, audio: true });
