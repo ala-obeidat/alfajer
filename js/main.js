@@ -53,6 +53,9 @@ const webcamVideo = document.getElementById('webcamVideo');
 const remoteVideo = document.getElementById('remoteVideo');
 const muteAudioButton = document.getElementById('muteAudio');
 const muteVideoButton = document.getElementById('muteVideo');
+const switchCameraButton = document.getElementById('switchCamera');
+const switchAudioInputButton = document.getElementById('switchAudioInput');
+const switchAudioOutputButton = document.getElementById('switchAudioOutput');
 
 const muteAudioIcon = document.getElementById('muteAudioIcon');
 const muteVideoIcon = document.getElementById('muteVideoIcon');
@@ -61,8 +64,20 @@ const hangupButton = document.getElementById('hangupButton');
 const shareButton = document.getElementById('shareButton');
 const copyButton = document.getElementById('copyButton');
 
+ 
+switchCameraButton.onclick=()=>{ 
+  webRTCObject.switchCam((newLocalStream)=>{
+    if(newLocalStream)
+    webcamVideo.srcObject = newLocalStream;
+  });
+};
 
-
+switchAudioInputButton.onclick=()=>{ 
+  webRTCObject.switchAudioInput();
+};
+switchAudioOutputButton.onclick=()=>{ 
+  webRTCObject.switchAudioOutput();
+};
 
 shareButton.onclick=()=>{
   const url= window.location.origin+'/'+pageName+'.html?call-id='+callId;
@@ -106,4 +121,4 @@ muteVideoButton.onclick=()=>{
             muteVideoButton.className='btn_option';
         }
     });
-};
+}

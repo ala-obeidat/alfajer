@@ -12,6 +12,11 @@ import { getFirestore,
 import { config } from './config.js';
 let endFun;
 let callEnded=false;
+let audioInputDevices = [];
+let currentAudioInputIndex = 0;
+let audioOutputDevices = [];
+let currentAudioOutputIndex = 0;
+
 export default class WebRTC{
   collectionName;db;rtc;openVideo;openAudio;auth;
   constructor(isVideo) {
@@ -80,7 +85,12 @@ export default class WebRTC{
 
     this.rtc= new RTCPeerConnection(config.rtc);
     config.answerCallback=answerCallback;
-    config.localStream = await navigator.mediaDevices.getUserMedia({ video: config.enableVideo, audio: true });
+    try{
+      config.localStream = await navigator.mediaDevices.getUserMedia({ video: config.enableVideo, audio: true });
+    }catch(x){
+      console.error(x);
+    }
+    
     config.remoteStream = new MediaStream();
   
     // Push tracks from local stream to peer connection
@@ -207,5 +217,75 @@ export default class WebRTC{
       callback();
     return true;
   };
+  switchCam=async()=>{
+    if (config.localStream) {
+      const currentVideoTrack = config.localStream.getVideoTracks()[0];
+      const videoDevices = await navigator.mediaDevices.enumerateDevices()
+        .then(devices => devices.filter(device => device.kind === 'videoinput'));
+      const currentDevice = videoDevices.find(device => device.deviceId === currentVideoTrack.getSettings().deviceId);
+      const nextDeviceIndex = (videoDevices.indexOf(currentDevice) + 1) % videoDevices.length;
+      const nextDevice = videoDevices[nextDeviceIndex];
+      
+      const newVideoStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: nextDevice.deviceId } });
+      const newVideoTrack = newVideoStream.getVideoTracks()[0];
+      config.localStream.removeTrack(currentVideoTrack);
+      config.localStream.addTrack(newVideoTrack);
+      if(callback)
+        callback(config.localStream);
   
+      this.rtc.getSenders().find(sender => sender.track.kind === 'video').replaceTrack(newVideoTrack);
+      currentVideoTrack.stop();
+    }
+    
+  };
+  switchAudioInput=async()=>{
+    if (audioInputDevices.length === 0) {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      audioInputDevices = devices.filter(device => device.kind === 'audioinput');
+    }
+    if (audioInputDevices.length > 1) {
+      currentAudioInputIndex = (currentAudioInputIndex + 1) % audioInputDevices.length;
+      const nextAudioDeviceId = audioInputDevices[currentAudioInputIndex].deviceId;
+  
+      const newAudioStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: nextAudioDeviceId } });
+      const newAudioTrack = newAudioStream.getAudioTracks()[0];
+  
+      const oldAudioTrack = config.localStream.getAudioTracks()[0];
+      if (oldAudioTrack) {
+        config.localStream.removeTrack(oldAudioTrack);
+      oldAudioTrack.stop();
+      }
+      
+      config.localStream.addTrack(newAudioTrack);
+      
+      // Replace the audio track in the peer connection
+      const sender = this.rtc.getSenders().find(sender => sender.track.kind === 'audio');
+      if (sender) {
+      sender.replaceTrack(newAudioTrack);
+      }
+    }
+  };
+  switchAudioOutput = async()=>{
+    if (audioOutputDevices.length === 0) {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      audioOutputDevices = devices.filter(device => device.kind === 'audiooutput');
+    }
+  
+    if (audioOutputDevices.length > 1) {
+      currentAudioOutputIndex = (currentAudioOutputIndex + 1) % audioOutputDevices.length;
+      const nextAudioDeviceId = audioOutputDevices[currentAudioOutputIndex].deviceId;
+  
+      if (typeof remoteVideo.setSinkId === 'undefined') {
+        console.warn('Audio output switching is not supported by your browser.');
+        return;
+      }
+  
+      try {
+        await remoteVideo.setSinkId(nextAudioDeviceId);
+        console.log(`Switched to audio device: ${nextAudioDeviceId}`);
+      } catch (error) {
+        console.error(`Error switching audio output device: ${error}`);
+      }
+    }
+  }
 }
