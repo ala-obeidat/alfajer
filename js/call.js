@@ -217,7 +217,7 @@ export default class WebRTC{
       callback();
     return true;
   };
-  switchCam=async()=>{
+  switchCam=async(callback)=>{
     if (config.localStream) {
       const currentVideoTrack = config.localStream.getVideoTracks()[0];
       const videoDevices = await navigator.mediaDevices.enumerateDevices()
