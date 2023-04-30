@@ -275,13 +275,13 @@ export default class WebRTC{
       currentAudioOutputIndex = (currentAudioOutputIndex + 1) % audioOutputDevices.length;
       const nextAudioDeviceId = audioOutputDevices[currentAudioOutputIndex].deviceId;
   
-      if (typeof remoteVideo.setSinkId === 'undefined') {
+      if (typeof config.remoteStream.setSinkId === 'undefined') {
         console.warn('Audio output switching is not supported by your browser.');
         return;
       }
   
       try {
-        await remoteVideo.setSinkId(nextAudioDeviceId);
+        await config.remoteStream.setSinkId(nextAudioDeviceId);
         console.log(`Switched to audio device: ${nextAudioDeviceId}`);
       } catch (error) {
         console.error(`Error switching audio output device: ${error}`);
