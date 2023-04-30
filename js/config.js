@@ -22,7 +22,7 @@ const firebaseConfig = {
     rtc:servers,
     firebase:firebaseConfig,
     localStream: null,
-    remoteStream:null,
+    remoteStream:null, 
     enableVideo:true,
     enableAudio:true
   }

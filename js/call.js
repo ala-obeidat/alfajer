@@ -265,7 +265,7 @@ export default class WebRTC{
       }
     }
   };
-  switchAudioOutput = async()=>{
+  switchAudioOutput = async(remoteVideo)=>{
     if (audioOutputDevices.length === 0) {
       const devices = await navigator.mediaDevices.enumerateDevices();
       audioOutputDevices = devices.filter(device => device.kind === 'audiooutput');
@@ -275,13 +275,13 @@ export default class WebRTC{
       currentAudioOutputIndex = (currentAudioOutputIndex + 1) % audioOutputDevices.length;
       const nextAudioDeviceId = audioOutputDevices[currentAudioOutputIndex].deviceId;
   
-      if (typeof config.remoteStream.setSinkId === 'undefined') {
+      if (typeof remoteVideo.setSinkId === 'undefined') {
         console.warn('Audio output switching is not supported by your browser.');
         return;
       }
   
       try {
-        await config.remoteStream.setSinkId(nextAudioDeviceId);
+        await remoteVideo.setSinkId(nextAudioDeviceId);
         console.log(`Switched to audio device: ${nextAudioDeviceId}`);
       } catch (error) {
         console.error(`Error switching audio output device: ${error}`);
