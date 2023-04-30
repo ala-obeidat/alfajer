@@ -76,7 +76,7 @@ switchAudioInputButton.onclick=()=>{
   webRTCObject.switchAudioInput();
 };
 switchAudioOutputButton.onclick=()=>{ 
-  webRTCObject.switchAudioOutput();
+  webRTCObject.switchAudioOutput(remoteVideo);
 };
 
 shareButton.onclick=()=>{
