@@ -1,0 +1,25 @@
+{
+  "extends": ["stylelint-config-standard", "stylelint-config-html/svelte"],
+  "rules": {
+    "property-disallowed-list": [
+      "left",
+      "right",
+      "top",
+      "bottom",
+      "margin-left",
+      "margin-right",
+      "margin-top",
+      "margin-bottom",
+      "padding-left",
+      "padding-right",
+      "padding-top",
+      "padding-bottom",
+      "border-left",
+      "border-right",
+      "border-top",
+      "border-bottom",
+      "float",
+      "clear"
+    ]
+  }
+}

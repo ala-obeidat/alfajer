@@ -1,0 +1,23 @@
+#cloud-config
+users:
+  - name: alaobeidat
+    groups: [sudo]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys: ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQC5rxP7kSbSoQ7QdhCQPqkiwtIHLaeJlhET3wmBvM3rR1abqx09/EHNUjloE9g/64OBpIlLdgdGUhOpHJm5OpObTe47L2D7MTd/WV1Gp4QVzCUkhxauei4Pi+1nUugm06kgjkD7E6PQTTpLhFhWs/AMT4wHKiz1pXaOb4fs7UXyWyqW+APDZz0ZlZv086om5QluGQmm45CzeZqdQ//VwfDfZH2qGJoDZ5JezsDuGQ/FzFTRVOJa14Q8QlesuwGpdaCmWCVOTqTAP+09TaKb8BkRA9aSunF6dRWpE2Cv8WQ2aT0tu757gp0vl4M/tra/DCgTOtMJXwqWWHZuO+7tOuQ/ILn/o6Yv9Vo75xaUrStu0RE0i0uTJZjgf17TW3qkcNqYT/p67S91XteGiQcaJ4ql74AvVNapOIIOR7XSlag/lDVv6WM8compSl625sWzyeFoJs0j/d9s/wJbljGUrT3qBdF3CY4d4TQPmJYXwcRl1zZvNvjWmkhlmkAJvZOWjRukNRSwQx39WiFixGtd6Anmtirdg3fR8br6hb26OU1irteGJJcef2LTcgAozlzRt3ZcmJvRzoL/kaQIGdG2xk7WFbLhdipmgLujvIwZfELUnzSkv2+gqPJy0gd+nKMF1+Vca4afefv6k1jlKmBsO6v6lDaGnLEm/yD7CS7PSCO+aQ== alaobeidat
+
+package_update: true
+package_upgrade: true
+packages:
+  - fail2ban
+  - unattended-upgrades
+  - ufw
+  - htop
+  - curl
+
+runcmd:
+  - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+  - sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+  - systemctl restart ssh
+  - systemctl enable --now fail2ban
+  - dpkg-reconfigure -plow unattended-upgrades

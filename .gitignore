@@ -1,0 +1,12 @@
+node_modules/
+dist/
+apps/signaling/node_modules/
+apps/web/node_modules/
+build/
+.svelte-kit/
+.env
+.env.*
+!.env.example
+coverage/
+playwright-report/
+test-results/
