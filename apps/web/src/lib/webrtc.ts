@@ -1,3 +1,11 @@
+import { PUBLIC_SIGNALING_URL, PUBLIC_TURN_URL } from '$env/static/public';
+
+const DEFAULT_SIGNALING_URL = 'http://localhost:3000';
+
+function toWsUrl(httpUrl: string): string {
+  return httpUrl.replace(/^http(s?):/, 'ws$1:');
+}
+
 export class WebRTCManager {
   public pc: RTCPeerConnection;
   private ws: WebSocket;
@@ -19,14 +27,38 @@ export class WebRTCManager {
   public onJoinAccepted?: () => void;
   public onJoinRejected?: () => void;
 
-  constructor(roomId: string) {
+  static async create(roomId: string, username: string): Promise<WebRTCManager> {
+    const signalingUrl = PUBLIC_SIGNALING_URL || DEFAULT_SIGNALING_URL;
+    const iceServers: RTCIceServer[] = [
+      { urls: 'stun:stun.l.google.com:19302' }
+    ];
+
+    if (PUBLIC_TURN_URL) {
+      try {
+        const credsRes = await fetch(
+          `${signalingUrl}/turn-credentials?username=${encodeURIComponent(username)}`
+        );
+        if (credsRes.ok) {
+          const creds = await credsRes.json() as { username: string; credential: string };
+          iceServers.push({
+            urls: PUBLIC_TURN_URL,
+            username: creds.username,
+            credential: creds.credential
+          });
+        } else {
+          console.warn('TURN credential fetch failed, status', credsRes.status);
+        }
+      } catch (e) {
+        console.warn('TURN credential fetch error, continuing without TURN', e);
+      }
+    }
+
+    return new WebRTCManager(roomId, signalingUrl, iceServers);
+  }
+
+  constructor(roomId: string, signalingUrl: string = DEFAULT_SIGNALING_URL, iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }]) {
     this.roomId = roomId;
-    this.pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        // CoTURN credentials will be dynamically fetched here in a production setup
-      ]
-    });
+    this.pc = new RTCPeerConnection({ iceServers });
 
     this.worker = new Worker(new URL('./e2ee/transform.worker.ts', import.meta.url), { type: 'module' });
 
@@ -53,7 +85,7 @@ export class WebRTCManager {
       }
     };
 
-    this.ws = new WebSocket(`ws://localhost:3000/call/${roomId}`);
+    this.ws = new WebSocket(`${toWsUrl(signalingUrl)}/call/${roomId}`);
     
     this.ws.onopen = () => {
       for (const msg of this.wsQueue) {

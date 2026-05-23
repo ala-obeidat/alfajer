@@ -40,7 +40,7 @@
   onMount(async () => {
     identity = getOrGenerateIdentity(); // Auto-generates gest-xxxx if not present
     if (isInitiator) {
-      rtcManager = new WebRTCManager(roomId);
+      rtcManager = await WebRTCManager.create(roomId, identity);
       setupRtcCallbacks();
       await startMediaAndCall();
     }
@@ -124,13 +124,13 @@
     }
   }
   
-  function sendJoinRequest() {
+  async function sendJoinRequest() {
     if (!knockName) return;
     knockStatus = 'requesting';
     identity = knockName;
-    
+
     if (!rtcManager) {
-      rtcManager = new WebRTCManager(roomId);
+      rtcManager = await WebRTCManager.create(roomId, identity);
       setupRtcCallbacks();
     }
     rtcManager.requestJoin(knockName);
