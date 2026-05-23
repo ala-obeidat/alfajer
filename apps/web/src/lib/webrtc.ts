@@ -8,9 +8,9 @@ function toWsUrl(httpUrl: string): string {
 
 export class WebRTCManager {
   public pc: RTCPeerConnection;
+  public localStream: MediaStream | null = null;
   private ws: WebSocket;
   private roomId: string;
-  private localStream: MediaStream | null = null;
   private ecdhKeyPair: CryptoKeyPair | null = null;
   private sharedSecret: CryptoKey | null = null;
   private worker: Worker;
@@ -118,6 +118,36 @@ export class WebRTCManager {
     for (const track of stream.getTracks()) {
       this.pc.addTrack(track, stream);
       // E2EE sender transform disabled — see note in ontrack handler above.
+    }
+  }
+
+  public async replaceVideoTrack(newTrack: MediaStreamTrack) {
+    if (!this.localStream) return;
+    for (const old of this.localStream.getVideoTracks()) {
+      this.localStream.removeTrack(old);
+      old.stop();
+    }
+    this.localStream.addTrack(newTrack);
+    const sender = this.pc.getSenders().find(s => s.track?.kind === 'video');
+    if (sender) {
+      await sender.replaceTrack(newTrack);
+    } else {
+      this.pc.addTrack(newTrack, this.localStream);
+    }
+  }
+
+  public async replaceAudioTrack(newTrack: MediaStreamTrack) {
+    if (!this.localStream) return;
+    for (const old of this.localStream.getAudioTracks()) {
+      this.localStream.removeTrack(old);
+      old.stop();
+    }
+    this.localStream.addTrack(newTrack);
+    const sender = this.pc.getSenders().find(s => s.track?.kind === 'audio');
+    if (sender) {
+      await sender.replaceTrack(newTrack);
+    } else {
+      this.pc.addTrack(newTrack, this.localStream);
     }
   }
 

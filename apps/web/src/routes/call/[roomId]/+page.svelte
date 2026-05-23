@@ -32,10 +32,26 @@
   
   let isInitiator = $page.url.searchParams.has('init');
   let hasJoined = $state(isInitiator);
-  
+
   // Clean URL for sharing
-  let shareUrl = typeof window !== 'undefined' ? 
+  let shareUrl = typeof window !== 'undefined' ?
     window.location.href.replace('?init=true', '') : '';
+
+  // Device switching
+  let videoInputs = $state<MediaDeviceInfo[]>([]);
+  let audioInputs = $state<MediaDeviceInfo[]>([]);
+  let audioOutputs = $state<MediaDeviceInfo[]>([]);
+  let currentCameraId = $state<string>('');
+  let currentMicId = $state<string>('');
+  let currentSpeakerId = $state<string>('');
+  let showDeviceMenu = $state(false);
+  const speakerSelectSupported = typeof HTMLMediaElement !== 'undefined'
+    && 'setSinkId' in HTMLMediaElement.prototype;
+
+  // Draggable local video
+  let localOffset = $state({ x: 0, y: 0 });
+  let localWrapperEl: HTMLDivElement | undefined;
+  let dragStart: { px: number; py: number; ox: number; oy: number } | null = null;
 
   onMount(async () => {
     identity = getOrGenerateIdentity(); // Auto-generates gest-xxxx if not present
@@ -117,11 +133,128 @@
         localVideoRef.srcObject = stream;
       }
       await rtcManager.setLocalStream(stream);
+      currentCameraId = stream.getVideoTracks()[0]?.getSettings().deviceId || '';
+      currentMicId = stream.getAudioTracks()[0]?.getSettings().deviceId || '';
+      await refreshDevices();
+      navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
       await rtcManager.startCall();
     } catch (e) {
       console.error('Failed to get media devices', e);
       alert('Could not access camera/microphone.');
     }
+  }
+
+  async function refreshDevices() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      videoInputs = devices.filter(d => d.kind === 'videoinput');
+      audioInputs = devices.filter(d => d.kind === 'audioinput');
+      audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+    } catch (e) {
+      console.warn('enumerateDevices failed', e);
+    }
+  }
+
+  async function switchCamera(deviceId: string) {
+    if (!rtcManager || !deviceId || deviceId === currentCameraId) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId } },
+        audio: false
+      });
+      const newTrack = stream.getVideoTracks()[0];
+      await rtcManager.replaceVideoTrack(newTrack);
+      if (localVideoRef && rtcManager.localStream) {
+        localVideoRef.srcObject = rtcManager.localStream;
+      }
+      currentCameraId = newTrack.getSettings().deviceId || deviceId;
+    } catch (e) {
+      console.error('switchCamera failed', e);
+      alert('Could not switch camera.');
+    }
+  }
+
+  async function cycleCamera() {
+    if (videoInputs.length < 2) return;
+    const idx = videoInputs.findIndex(d => d.deviceId === currentCameraId);
+    const next = videoInputs[(idx + 1) % videoInputs.length];
+    if (next) await switchCamera(next.deviceId);
+  }
+
+  async function switchMic(deviceId: string) {
+    if (!rtcManager || !deviceId || deviceId === currentMicId) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: deviceId } },
+        video: false
+      });
+      const newTrack = stream.getAudioTracks()[0];
+      await rtcManager.replaceAudioTrack(newTrack);
+      // Re-apply mute state to the new track
+      if (rtcManager.localStream) {
+        rtcManager.toggleAudio(!isMuted);
+      }
+      currentMicId = newTrack.getSettings().deviceId || deviceId;
+    } catch (e) {
+      console.error('switchMic failed', e);
+      alert('Could not switch microphone.');
+    }
+  }
+
+  async function switchSpeaker(deviceId: string) {
+    if (!remoteVideoRef || !deviceId) return;
+    if (!('setSinkId' in remoteVideoRef)) {
+      alert('Your browser does not support selecting an audio output.');
+      return;
+    }
+    try {
+      // @ts-ignore — setSinkId is not in all TS lib targets
+      await remoteVideoRef.setSinkId(deviceId);
+      currentSpeakerId = deviceId;
+    } catch (e) {
+      console.error('switchSpeaker failed', e);
+      alert('Could not switch speaker.');
+    }
+  }
+
+  // Draggable local-video handlers
+  function onLocalPointerDown(e: PointerEvent) {
+    if (!localWrapperEl) return;
+    dragStart = {
+      px: e.clientX,
+      py: e.clientY,
+      ox: localOffset.x,
+      oy: localOffset.y
+    };
+    didDrag = false;
+    localWrapperEl.setPointerCapture(e.pointerId);
+  }
+
+  function onLocalPointerMove(e: PointerEvent) {
+    if (!dragStart || !localWrapperEl) return;
+    const dx = e.clientX - dragStart.px;
+    const dy = e.clientY - dragStart.py;
+    const rect = localWrapperEl.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Clamp so the box keeps at least 24px on-screen each direction.
+    // rect already reflects the current transform, so we work in offset deltas.
+    const proposedX = dragStart.ox + dx;
+    const proposedY = dragStart.oy + dy;
+    const minOffX = -((rect.left - dragStart.ox) + rect.width - 24);
+    const maxOffX = (vw - (rect.left - dragStart.ox) - 24);
+    const minOffY = -((rect.top - dragStart.oy) + rect.height - 24);
+    const maxOffY = (vh - (rect.top - dragStart.oy) - 24);
+    localOffset = {
+      x: Math.min(maxOffX, Math.max(minOffX, proposedX)),
+      y: Math.min(maxOffY, Math.max(minOffY, proposedY))
+    };
+  }
+
+  function onLocalPointerUp(e: PointerEvent) {
+    if (!localWrapperEl) return;
+    try { localWrapperEl.releasePointerCapture(e.pointerId); } catch {}
+    dragStart = null;
   }
   
   async function sendJoinRequest() {
@@ -153,6 +286,9 @@
   onDestroy(() => {
     stopTimer();
     rtcManager?.endCall();
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
+      navigator.mediaDevices.removeEventListener('devicechange', refreshDevices);
+    }
   });
   
   function startTimer() {
@@ -243,12 +379,22 @@
       {/if}
     </div>
 
-    <div class="video-wrapper local-video-wrapper">
+    <div
+      class="video-wrapper local-video-wrapper"
+      class:dragging={dragStart !== null}
+      bind:this={localWrapperEl}
+      onpointerdown={onLocalPointerDown}
+      onpointermove={onLocalPointerMove}
+      onpointerup={onLocalPointerUp}
+      onpointercancel={onLocalPointerUp}
+      style="transform: translate({localOffset.x}px, {localOffset.y}px)"
+      role="presentation"
+    >
       <video bind:this={localVideoRef} autoplay muted playsinline class="local-video"></video>
       <div class="name-badge">{identity} (You)</div>
     </div>
   </div>
-  
+
   <div class="controls">
     <div class="timer">{formatDuration(durationMs)}</div>
     <button onclick={toggleMute}>
@@ -257,8 +403,85 @@
     <button onclick={toggleCamera}>
       {isCameraOff ? $t('cameraOn') : $t('cameraOff')}
     </button>
+    {#if videoInputs.length > 1}
+      <button onclick={cycleCamera} title="Switch camera" aria-label="Switch camera">
+        Flip
+      </button>
+    {/if}
+    <button onclick={() => { refreshDevices(); showDeviceMenu = !showDeviceMenu; }} aria-haspopup="dialog">
+      Devices
+    </button>
     <button class="danger" onclick={endCall}>End Call</button>
   </div>
+
+  {#if showDeviceMenu}
+    <div
+      class="device-backdrop"
+      onclick={() => (showDeviceMenu = false)}
+      onkeydown={(e) => { if (e.key === 'Escape') showDeviceMenu = false; }}
+      role="button"
+      tabindex="-1"
+      aria-label="Close device picker"
+    ></div>
+    <div class="device-menu" role="dialog" aria-label="Audio &amp; video devices">
+      <div class="device-row">
+        <label>
+          <span>Microphone</span>
+          <select
+            value={currentMicId}
+            onchange={(e) => switchMic((e.currentTarget as HTMLSelectElement).value)}
+          >
+            {#if audioInputs.length === 0}
+              <option value="">(none detected)</option>
+            {/if}
+            {#each audioInputs as d}
+              <option value={d.deviceId}>{d.label || `Microphone ${d.deviceId.slice(0, 6)}`}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+
+      <div class="device-row">
+        <label>
+          <span>Speaker / Audio output</span>
+          {#if speakerSelectSupported}
+            <select
+              value={currentSpeakerId}
+              onchange={(e) => switchSpeaker((e.currentTarget as HTMLSelectElement).value)}
+            >
+              {#if audioOutputs.length === 0}
+                <option value="">(none detected — your OS controls output)</option>
+              {/if}
+              {#each audioOutputs as d}
+                <option value={d.deviceId}>{d.label || `Output ${d.deviceId.slice(0, 6)}`}</option>
+              {/each}
+            </select>
+          {:else}
+            <span class="hint">Not supported in this browser — use OS-level audio routing.</span>
+          {/if}
+        </label>
+      </div>
+
+      <div class="device-row">
+        <label>
+          <span>Camera</span>
+          <select
+            value={currentCameraId}
+            onchange={(e) => switchCamera((e.currentTarget as HTMLSelectElement).value)}
+          >
+            {#if videoInputs.length === 0}
+              <option value="">(none detected)</option>
+            {/if}
+            {#each videoInputs as d}
+              <option value={d.deviceId}>{d.label || `Camera ${d.deviceId.slice(0, 6)}`}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+
+      <button class="device-close" onclick={() => (showDeviceMenu = false)}>Close</button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -360,10 +583,20 @@
 
   .local-video-wrapper {
     position: absolute;
-    inset-block-end: 6rem;
+    inset-block-start: 1rem;
     inset-inline-end: 1rem;
     inline-size: clamp(110px, 22vw, 200px);
     z-index: 10;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    will-change: transform;
+    transition: box-shadow 0.15s ease;
+  }
+
+  .local-video-wrapper.dragging {
+    cursor: grabbing;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
   }
 
   .local-video {
@@ -371,6 +604,7 @@
     border-radius: 12px;
     box-shadow: 0 4px 6px rgb(0 0 0 / 30%);
     display: block;
+    pointer-events: none;
   }
 
   .name-badge {
@@ -436,9 +670,76 @@
     background: rgba(0, 0, 0, 0.6);
   }
 
+  .device-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 45;
+    background: rgba(0, 0, 0, 0.5);
+    border: none;
+    padding: 0;
+  }
+
+  .device-menu {
+    position: absolute;
+    inset-block-end: 5rem;
+    inset-inline-start: 50%;
+    transform: translateX(-50%);
+    z-index: 50;
+    background: var(--bg-secondary);
+    border-radius: 12px;
+    padding: 1.25rem;
+    box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    inline-size: min(380px, calc(100vw - 2rem));
+    max-block-size: calc(100dvh - 8rem);
+    overflow-y: auto;
+  }
+
+  .device-menu .device-row label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+  }
+
+  .device-menu select {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--text-secondary);
+    border-radius: 8px;
+    padding-block: 0.6rem;
+    padding-inline: 0.75rem;
+    font-size: 0.95rem;
+    outline: none;
+  }
+
+  .device-menu select:focus {
+    border-color: var(--accent);
+  }
+
+  .device-menu .hint {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+  }
+
+  .device-close {
+    align-self: flex-end;
+    margin-block-start: 0.25rem;
+    padding-block: 0.5rem;
+    padding-inline: 1rem;
+    border-radius: 8px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    cursor: pointer;
+  }
+
   @media (max-width: 600px) {
     .local-video-wrapper {
-      inset-block-end: 5.5rem;
+      inset-block-start: 0.75rem;
       inset-inline-end: 0.75rem;
       inline-size: clamp(90px, 28vw, 140px);
     }
