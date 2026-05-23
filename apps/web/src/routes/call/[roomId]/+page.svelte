@@ -265,15 +265,17 @@
   .call-container {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    position: fixed;
+    inset: 0;
     background-color: #000;
-    position: relative;
+    overflow: hidden;
+    z-index: 1;
   }
-  
+
   .overlay-status {
     position: absolute;
     inset: 0;
-    z-index: 20;
+    z-index: 30;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -281,22 +283,29 @@
     background-color: rgba(0, 0, 0, 0.8);
     color: white;
     gap: 1.5rem;
+    padding: 1rem;
+    text-align: center;
   }
-  
+
   .share-box {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.5rem;
     background: var(--bg-secondary);
     padding: 1rem;
     border-radius: 8px;
     align-items: center;
+    max-inline-size: 100%;
   }
-  
+
   .share-box input {
-    width: 300px;
+    flex: 1;
+    min-inline-size: 200px;
+    inline-size: 300px;
+    max-inline-size: 100%;
     background: var(--bg-primary);
   }
-  
+
   .card {
     background-color: var(--bg-secondary);
     padding: 2rem;
@@ -306,11 +315,14 @@
     gap: 1.5rem;
     align-items: center;
     box-shadow: 0 10px 15px -3px rgb(0 0 0 / 20%);
+    max-inline-size: 100%;
   }
 
   .actions {
     display: flex;
     gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
   }
 
   .invite-overlay input {
@@ -319,70 +331,146 @@
     border: 1px solid var(--text-muted);
     background: var(--bg-primary);
     color: var(--text-primary);
-    width: 250px;
+    inline-size: min(250px, 100%);
     font-size: 1rem;
   }
-  
+
+  .videos {
+    position: relative;
+    flex: 1;
+    min-block-size: 0;
+    overflow: hidden;
+  }
+
   .video-wrapper {
     position: relative;
-    width: 100%;
-    height: 100%;
   }
 
   .remote-video-wrapper {
-    flex: 1;
+    inline-size: 100%;
+    block-size: 100%;
   }
-  
+
   .remote-video {
-    width: 100%;
-    height: 100%;
+    inline-size: 100%;
+    block-size: 100%;
     object-fit: cover;
+    background-color: #000;
   }
-  
+
   .local-video-wrapper {
     position: absolute;
-    inset-block-end: 2rem;
-    inset-inline-end: 2rem;
-    width: 200px;
+    inset-block-end: 6rem;
+    inset-inline-end: 1rem;
+    inline-size: clamp(110px, 22vw, 200px);
     z-index: 10;
   }
 
   .local-video {
-    width: 100%;
+    inline-size: 100%;
     border-radius: 12px;
     box-shadow: 0 4px 6px rgb(0 0 0 / 30%);
+    display: block;
   }
 
   .name-badge {
     position: absolute;
-    inset-block-end: 1rem;
-    inset-inline-start: 1rem;
+    inset-block-end: 0.5rem;
+    inset-inline-start: 0.5rem;
     background: rgba(0, 0, 0, 0.6);
     color: white;
-    padding: 0.25rem 0.75rem;
+    padding: 0.25rem 0.6rem;
     border-radius: 4px;
     font-size: 0.875rem;
     z-index: 20;
     pointer-events: none;
   }
-  
+
   .controls {
+    position: absolute;
+    inset-block-end: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
+    z-index: 40;
     display: flex;
-    gap: 1rem;
-    padding-block: 1.5rem;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 1rem;
     justify-content: center;
     align-items: center;
-    background-color: var(--bg-secondary);
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0));
+    pointer-events: none;
   }
-  
+
+  .controls > * {
+    pointer-events: auto;
+  }
+
+  .controls button {
+    min-block-size: 44px;
+    padding-inline: 1rem;
+    border-radius: 999px;
+    background: rgba(40, 40, 50, 0.85);
+    color: white;
+    border: none;
+    font-size: 0.95rem;
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+  }
+
+  .controls button:hover {
+    background: rgba(60, 60, 75, 0.95);
+  }
+
+  .controls button.danger {
+    background: var(--danger);
+  }
+
   .timer {
     font-variant-numeric: tabular-nums;
-    font-size: 1.25rem;
+    font-size: 1.05rem;
     font-weight: 700;
-    padding-inline-end: 1rem;
+    color: white;
+    padding: 0.4rem 0.8rem;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.6);
   }
-  
-  button.danger {
-    background-color: var(--danger);
+
+  @media (max-width: 600px) {
+    .local-video-wrapper {
+      inset-block-end: 5.5rem;
+      inset-inline-end: 0.75rem;
+      inline-size: clamp(90px, 28vw, 140px);
+    }
+
+    .controls {
+      gap: 0.5rem;
+      padding: 0.75rem;
+    }
+
+    .controls button {
+      padding-inline: 0.75rem;
+      font-size: 0.9rem;
+    }
+
+    .timer {
+      font-size: 0.9rem;
+      padding: 0.3rem 0.6rem;
+    }
+
+    .overlay-status h2 {
+      font-size: 1.25rem;
+    }
+  }
+
+  @media (max-width: 380px) {
+    .controls {
+      flex-direction: row;
+      justify-content: space-around;
+    }
+
+    .controls button {
+      padding-inline: 0.5rem;
+    }
   }
 </style>

@@ -63,12 +63,11 @@ export class WebRTCManager {
     this.worker = new Worker(new URL('./e2ee/transform.worker.ts', import.meta.url), { type: 'module' });
 
     this.pc.ontrack = (event) => {
-      // E2EE receiver transform hook
-      const receiver = event.receiver;
-      if ((window as any).RTCRtpScriptTransform) {
-        // @ts-ignore
-        receiver.transform = new RTCRtpScriptTransform(this.worker, { side: 'receiver' });
-      }
+      // E2EE script-transform path is disabled — RTCRtpScriptTransform support
+      // diverges across browsers (notably Safari iOS and older Chrome Android),
+      // and a partial deployment corrupts the receive stream. WebRTC's built-in
+      // DTLS-SRTP still encrypts media in transit. Re-enable once we have a
+      // negotiated capability check.
       this.onRemoteTrack?.(event.track, event.streams);
     };
 
@@ -117,12 +116,8 @@ export class WebRTCManager {
   public async setLocalStream(stream: MediaStream) {
     this.localStream = stream;
     for (const track of stream.getTracks()) {
-      const sender = this.pc.addTrack(track, stream);
-      // E2EE sender transform hook
-      if ((window as any).RTCRtpScriptTransform) {
-        // @ts-ignore
-        sender.transform = new RTCRtpScriptTransform(this.worker, { side: 'sender' });
-      }
+      this.pc.addTrack(track, stream);
+      // E2EE sender transform disabled — see note in ontrack handler above.
     }
   }
 
