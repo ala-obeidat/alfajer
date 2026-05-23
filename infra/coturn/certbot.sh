@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Certbot renewal hook for CoTURN
 
-DOMAIN="turn.alaobeidat.com"
-EMAIL="admin@alaobeidat.com"
+DOMAIN="turn.alfajer.example"
+EMAIL="admin@alfajer.example"
 
 echo "Requesting initial certificate for ${DOMAIN}..."
 certbot certonly --standalone -d ${DOMAIN} --non-interactive --agree-tos -m ${EMAIL}

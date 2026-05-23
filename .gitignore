@@ -1,7 +1,5 @@
 node_modules/
 dist/
-apps/signaling/node_modules/
-apps/web/node_modules/
 build/
 .svelte-kit/
 .env
@@ -10,3 +8,5 @@ build/
 coverage/
 playwright-report/
 test-results/
+deploy-secrets.local.txt
+*.local.txt

@@ -17,7 +17,7 @@ Instructions for deploying the Alfajer Web application (SvelteKit) to Cloudflare
 Ensure you set these environment variables in the Cloudflare Pages settings:
 
 - `NODE_VERSION`: `20` (or `22`)
-- `PUBLIC_SIGNALING_URL`: `wss://alaobeidat.com`
+- `PUBLIC_SIGNALING_URL`: `wss://your-backend-url.com`
 
 ## Adapter Configuration
 
