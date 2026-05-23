@@ -1,16 +1,11 @@
-import { addMessages, init, register, getLocaleFromNavigator } from 'svelte-i18n';
-import ar from './ar.json';
+import { addMessages, init } from 'svelte-i18n';
+import en from './en.json';
 
-// Synchronous load for Arabic (Default)
-addMessages('ar', ar);
-
-// Asynchronous dynamic import for English
-register('en', () => import('./en.json'));
-
-const browserLocale = typeof window !== 'undefined' ? getLocaleFromNavigator() : 'ar';
-const initialLocale = browserLocale?.startsWith('en') ? 'en' : 'ar';
+// English-only build — the Arabic locale and language picker were removed
+// (the ar.json file is left on disk for future re-enablement).
+addMessages('en', en);
 
 init({
-  fallbackLocale: 'ar',
-  initialLocale,
+  fallbackLocale: 'en',
+  initialLocale: 'en',
 });

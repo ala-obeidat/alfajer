@@ -53,6 +53,15 @@
   let localWrapperEl: HTMLDivElement | undefined;
   let dragStart: { px: number; py: number; ox: number; oy: number } | null = null;
 
+  // The Flip button is shown when we know we have 2+ cameras OR when the
+  // device looks like a phone/tablet (coarse pointer). Mobile browsers often
+  // mask deviceIds until permission is granted twice, so we rely on
+  // facingMode for the switch and just need to surface the button.
+  let canFlip = $derived(
+    videoInputs.length > 1 ||
+    (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
+  );
+
   onMount(async () => {
     identity = getOrGenerateIdentity(); // Auto-generates gest-xxxx if not present
     if (isInitiator) {
@@ -155,30 +164,102 @@
     }
   }
 
+  function inferFacing(label: string | undefined): 'user' | 'environment' | undefined {
+    const l = (label || '').toLowerCase();
+    if (l.includes('back') || l.includes('rear') || l.includes('environment')) return 'environment';
+    if (l.includes('front') || l.includes('user') || l.includes('selfie') || l.includes('face')) return 'user';
+    return undefined;
+  }
+
+  async function acquireVideo(constraints: MediaStreamConstraints[]): Promise<MediaStream | null> {
+    for (const c of constraints) {
+      try {
+        return await navigator.mediaDevices.getUserMedia(c);
+      } catch (e) {
+        console.warn('getUserMedia attempt failed', c, e);
+      }
+    }
+    return null;
+  }
+
+  async function applyNewVideoStream(stream: MediaStream) {
+    if (!rtcManager) return;
+    const newTrack = stream.getVideoTracks()[0];
+    if (!newTrack) return;
+    await rtcManager.replaceVideoTrack(newTrack);
+    if (localVideoRef && rtcManager.localStream) {
+      localVideoRef.srcObject = rtcManager.localStream;
+    }
+    if (isCameraOff) {
+      // Preserve "Camera Off" state on the new track
+      rtcManager.toggleVideo(false);
+    }
+    currentCameraId = newTrack.getSettings().deviceId || '';
+    // Re-enumerate to pick up any newly-labeled devices
+    await refreshDevices();
+  }
+
   async function switchCamera(deviceId: string) {
     if (!rtcManager || !deviceId || deviceId === currentCameraId) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: deviceId } },
-        audio: false
-      });
-      const newTrack = stream.getVideoTracks()[0];
-      await rtcManager.replaceVideoTrack(newTrack);
-      if (localVideoRef && rtcManager.localStream) {
-        localVideoRef.srcObject = rtcManager.localStream;
-      }
-      currentCameraId = newTrack.getSettings().deviceId || deviceId;
-    } catch (e) {
-      console.error('switchCamera failed', e);
-      alert('Could not switch camera.');
+    const target = videoInputs.find(d => d.deviceId === deviceId);
+    const targetFacing = inferFacing(target?.label);
+
+    // Stop current video FIRST — Android holds the camera hardware otherwise
+    rtcManager.localStream?.getVideoTracks().forEach(t => t.stop());
+
+    const attempts: MediaStreamConstraints[] = [
+      { video: { deviceId: { exact: deviceId } }, audio: false }
+    ];
+    if (targetFacing) {
+      attempts.push({ video: { facingMode: { exact: targetFacing } }, audio: false });
+      attempts.push({ video: { facingMode: { ideal: targetFacing } }, audio: false });
     }
+    attempts.push({ video: true, audio: false });
+
+    const stream = await acquireVideo(attempts);
+    if (!stream) {
+      alert('Could not switch camera. Reload the page to restore video.');
+      return;
+    }
+    await applyNewVideoStream(stream);
   }
 
   async function cycleCamera() {
-    if (videoInputs.length < 2) return;
-    const idx = videoInputs.findIndex(d => d.deviceId === currentCameraId);
-    const next = videoInputs[(idx + 1) % videoInputs.length];
-    if (next) await switchCamera(next.deviceId);
+    if (!rtcManager) return;
+
+    // Prefer facingMode for the Flip path — Android Chrome resolves it much
+    // more reliably than deviceId, and on iOS Safari deviceIds are masked
+    // until permission is granted twice in a row.
+    const currentTrack = rtcManager.localStream?.getVideoTracks()[0];
+    const settings = currentTrack?.getSettings();
+    const currentFacing = (settings?.facingMode as 'user' | 'environment' | undefined)
+      ?? inferFacing(videoInputs.find(d => d.deviceId === currentCameraId)?.label);
+    const targetFacing: 'user' | 'environment' =
+      currentFacing === 'environment' ? 'user' : 'environment';
+
+    rtcManager.localStream?.getVideoTracks().forEach(t => t.stop());
+
+    const attempts: MediaStreamConstraints[] = [
+      { video: { facingMode: { exact: targetFacing } }, audio: false },
+      { video: { facingMode: { ideal: targetFacing } }, audio: false }
+    ];
+    // Fall back to deviceId rotation through our enumerated list
+    if (videoInputs.length > 1) {
+      const idx = videoInputs.findIndex(d => d.deviceId === currentCameraId);
+      const next = videoInputs[(idx + 1) % videoInputs.length];
+      if (next && next.deviceId !== currentCameraId) {
+        attempts.push({ video: { deviceId: { exact: next.deviceId } }, audio: false });
+      }
+    }
+    // Last resort: any camera the OS will give us
+    attempts.push({ video: true, audio: false });
+
+    const stream = await acquireVideo(attempts);
+    if (!stream) {
+      alert('Could not switch camera. Reload the page to restore video.');
+      return;
+    }
+    await applyNewVideoStream(stream);
   }
 
   async function switchMic(deviceId: string) {
@@ -403,7 +484,7 @@
     <button onclick={toggleCamera}>
       {isCameraOff ? $t('cameraOn') : $t('cameraOff')}
     </button>
-    {#if videoInputs.length > 1}
+    {#if canFlip}
       <button onclick={cycleCamera} title="Switch camera" aria-label="Switch camera">
         Flip
       </button>

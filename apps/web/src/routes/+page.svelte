@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { t, locale } from 'svelte-i18n';
+  import { t } from 'svelte-i18n';
   import { getOrGenerateIdentity } from '../lib/identity';
-  
+
   let identity = $state('');
   let nicknameInput = $state('');
 
@@ -22,26 +22,15 @@
     const array = new Uint8Array(4);
     window.crypto.getRandomValues(array);
     const roomId = Array.from(array).map(b => b.toString(16).padStart(2, '0')).join('');
-    
+
     // Redirect to room with init flag
     window.location.href = `/call/${roomId}?init=true`;
-  }
-
-  function toggleLanguage() {
-    if ($locale?.startsWith('ar')) {
-      $locale = 'en';
-    } else {
-      $locale = 'ar';
-    }
   }
 </script>
 
 <div class="landing-page">
   <header>
     <h1>{$t('welcome')}</h1>
-    <button onclick={toggleLanguage}>
-      {$locale?.startsWith('ar') ? 'English' : 'عربي'}
-    </button>
   </header>
 
   <div class="card">
