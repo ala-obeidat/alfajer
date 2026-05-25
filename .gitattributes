@@ -1,0 +1,12 @@
+# Shell scripts must use LF line endings even when checked out on Windows,
+# otherwise scp'ing them to a Linux server produces bash syntax errors of
+# the form: "unexpected end of file from `if' command".
+*.sh text eol=lf
+
+# Same for any other Linux-side scripts we may add later.
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Cloudflare _headers / _redirects are parsed by CF's edge — LF only.
+**/static/_headers text eol=lf
+**/static/_redirects text eol=lf
