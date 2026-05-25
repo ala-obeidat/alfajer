@@ -6,6 +6,8 @@ import { generateTurnCredentials } from './turn';
 const PORT = process.env.PORT || 3000;
 const TURN_STATIC_AUTH_SECRET = process.env.TURN_STATIC_AUTH_SECRET || '';
 
+// Signaling-only WebRTC handshake relay. Never logs payloads, IPs, or room IDs.
+// Stateless room registry lives entirely in process memory — see ./room.
 const app = new Elysia()
   .use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }))
   .onError(({ code, error }) => {
