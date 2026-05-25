@@ -106,6 +106,21 @@ const app = new Elysia()
       }
     },
     message(ws, message) {
+      // Reject oversized frames. SDP and ICE messages stay comfortably under
+      // 16 KB; chat ciphertexts are tiny. 64 KB is a generous cap that still
+      // blocks an attacker from sending multi-megabyte payloads to exhaust
+      // server memory or hammer the peer's parser.
+      const MAX_MESSAGE_BYTES = 64 * 1024;
+      const sizeOf = (m: unknown) =>
+        typeof m === 'string' ? m.length :
+        m instanceof Uint8Array ? m.byteLength :
+        JSON.stringify(m).length;
+      if (sizeOf(message) > MAX_MESSAGE_BYTES) {
+        // Don't relay; close the abusing peer with policy-violation code.
+        ws.close(1009, 'Message too big');
+        return;
+      }
+
       const roomId = ws.data.params.roomId;
       try {
         const obj = typeof message === 'string' ? JSON.parse(message) : message;

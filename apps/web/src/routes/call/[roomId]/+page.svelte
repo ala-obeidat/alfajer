@@ -569,7 +569,11 @@
     return `${m}:${s}`;
   }
   function groupedRoomCode(code: string): string {
-    return code.length === 6 ? `${code.slice(0,3)} ${code.slice(3)}` : code;
+    // Three-digit grouping for readability. 9-digit current format renders
+    // as "123 456 789"; legacy 6-digit codes still render as "123 456".
+    if (code.length === 9) return `${code.slice(0,3)} ${code.slice(3,6)} ${code.slice(6)}`;
+    if (code.length === 6) return `${code.slice(0,3)} ${code.slice(3)}`;
+    return code;
   }
 
   // ---- Copy actions (with long-press option on touch) ----

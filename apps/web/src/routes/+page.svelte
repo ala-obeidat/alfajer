@@ -30,9 +30,17 @@
   });
 
   function generateRoomId(): string {
-    const buf = new Uint32Array(1);
+    // 9 digits = 1 billion possible codes. With our 30-WS-conn/min/IP rate
+    // limit a single attacker covers ~43k codes/day → exhausting the space
+    // would take ~63 years. A 1k-IP botnet still needs ~3 weeks. Combined
+    // with the room-seal + knock acceptance, brute-force hijack is
+    // economically infeasible.
+    const buf = new Uint32Array(2);
     window.crypto.getRandomValues(buf);
-    return String(100000 + (buf[0] % 900000));
+    // Concat two random 32-bit values to get a number in [1e8, 1e9-1].
+    const big = (BigInt(buf[0]) << 32n) | BigInt(buf[1]);
+    const r = Number(big % 900_000_000n);
+    return String(100_000_000 + r);
   }
 
   function persistNickname(): boolean {
@@ -64,8 +72,10 @@
   function joinCall() {
     if (!persistNickname()) return;
     const code = roomCode.trim();
-    if (!/^\d{6}$/.test(code)) {
-      error = 'Enter a 6-digit room code';
+    // Accept the new 9-digit format. Legacy 6-digit codes still work
+    // server-side; only the joiner-side input validation is tightened.
+    if (!/^\d{6,9}$/.test(code)) {
+      error = 'Enter the room code';
       return;
     }
     const params = audioOnly ? '?audio=1' : '';
@@ -80,7 +90,7 @@
 
   function onRoomCodeInput(e: Event) {
     const v = (e.currentTarget as HTMLInputElement).value;
-    roomCode = v.replace(/\D/g, '').slice(0, 6);
+    roomCode = v.replace(/\D/g, '').slice(0, 9);
   }
 
   function onCodeFocus(e: FocusEvent) {
@@ -159,7 +169,7 @@
       </div>
     {:else}
       <label class="field" in:fly={{ y: -8, duration: 200 }}>
-        <span>6-digit room code</span>
+        <span>Room code</span>
         <input
           type="text"
           value={roomCode}
@@ -167,8 +177,8 @@
           onfocus={onCodeFocus}
           inputmode="numeric"
           pattern="[0-9]*"
-          maxlength="6"
-          placeholder="123 456"
+          maxlength="9"
+          placeholder="123 456 789"
           autocomplete="off"
           class="code"
         />
