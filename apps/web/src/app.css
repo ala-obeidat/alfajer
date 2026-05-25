@@ -1,18 +1,49 @@
-:root {
+/* Light / dark themes. The `data-theme` attribute is set on <html> by
+   the theme store; if it's absent we fall back to dark via the html
+   selector default. */
+
+:root,
+html[data-theme="dark"] {
   --bg-primary: #0f172a;
   --bg-secondary: #1e293b;
+  --bg-elevated: #25324b;
   --text-primary: #f8fafc;
   --text-secondary: #94a3b8;
+  --text-muted: #64748b;
   --accent: #3b82f6;
   --accent-hover: #2563eb;
   --danger: #ef4444;
   --danger-hover: #dc2626;
   --success: #10b981;
+  --warn: #f59e0b;
+  --border: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.22);
+  --overlay: rgba(0, 0, 0, 0.6);
+  --code-bg: rgba(255, 255, 255, 0.08);
+  color-scheme: dark;
 }
 
-*, *::before, *::after {
-  box-sizing: border-box;
+html[data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-elevated: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+  --success: #059669;
+  --warn: #d97706;
+  --border: rgba(15, 23, 42, 0.12);
+  --border-strong: rgba(15, 23, 42, 0.22);
+  --overlay: rgba(15, 23, 42, 0.55);
+  --code-bg: rgba(15, 23, 42, 0.06);
+  color-scheme: light;
 }
+
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
   margin: 0;
@@ -23,6 +54,7 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 .app-container {
@@ -33,7 +65,6 @@ body {
   padding-block: 1rem;
 }
 
-/* Base interactive elements */
 button {
   cursor: pointer;
   border: none;
@@ -43,29 +74,21 @@ button {
   padding-block: 0.75rem;
   padding-inline: 1.5rem;
   font-weight: 600;
-  transition: background-color 0.2s ease, transform 0.1s ease;
+  transition: background-color 0.15s ease, transform 0.08s ease, box-shadow 0.15s ease;
 }
-
-button:hover {
-  background-color: var(--accent-hover);
-}
-
-button:active {
-  transform: scale(0.98);
-}
+button:hover:not(:disabled) { background-color: var(--accent-hover); }
+button:active:not(:disabled) { transform: scale(0.97); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 input {
   background-color: var(--bg-secondary);
-  border: 1px solid var(--text-secondary);
+  border: 1px solid var(--border-strong);
   color: var(--text-primary);
   border-radius: 8px;
   padding-block: 0.75rem;
   padding-inline: 1rem;
   font-size: 1rem;
   outline: none;
-  transition: border-color 0.2s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
-
-input:focus {
-  border-color: var(--accent);
-}
+input:focus { border-color: var(--accent); }

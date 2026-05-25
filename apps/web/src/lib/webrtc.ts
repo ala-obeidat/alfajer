@@ -6,6 +6,21 @@ function toWsUrl(httpUrl: string): string {
   return httpUrl.replace(/^http(s?):/, 'ws$1:');
 }
 
+export type CallQuality =
+  | { kind: 'connecting'; rttMs: null; lossPct: null }
+  | { kind: 'direct'; rttMs: number | null; lossPct: number | null }
+  | { kind: 'relay';  rttMs: number | null; lossPct: number | null }
+  | { kind: 'reconnecting'; rttMs: null; lossPct: null }
+  | { kind: 'failed'; rttMs: null; lossPct: null };
+
+/**
+ * Constructor options for WebRTCManager.create(): lets callers ask for an
+ * audio-only call from the very first getUserMedia (no flash of camera light).
+ */
+export interface CreateOpts {
+  audioOnly?: boolean;
+}
+
 export class WebRTCManager {
   public pc: RTCPeerConnection;
   public localStream: MediaStream | null = null;
@@ -45,8 +60,24 @@ export class WebRTCManager {
   public onJoinRequest?: (name: string) => void;
   public onJoinAccepted?: () => void;
   public onJoinRejected?: () => void;
+  public onChat?: (text: string, fromIdentity?: string) => void;
+  public onQualityChange?: (q: CallQuality) => void;
+  public onIceRestart?: () => void;
 
-  static async create(roomId: string, username: string): Promise<WebRTCManager> {
+  // Chat encryption — separate AES-GCM key derived from the same ECDH secret
+  // via HKDF with a distinct label. Both peers derive an identical key so
+  // either side can encrypt or decrypt. Random IV per message.
+  private chatKey: CryptoKey | null = null;
+  // Aggregated stats for the connection-quality indicator.
+  private statsInterval: number | null = null;
+  private currentQuality: CallQuality = { kind: 'connecting', rttMs: null, lossPct: null };
+  private iceRestartInFlight = false;
+
+  /** True if this call should never request video (initial getUserMedia
+   *  call asks for audio only). The user can still flip camera on mid-call. */
+  public audioOnly = false;
+
+  static async create(roomId: string, username: string, opts: CreateOpts = {}): Promise<WebRTCManager> {
     const signalingUrl = PUBLIC_SIGNALING_URL || DEFAULT_SIGNALING_URL;
     const iceServers: RTCIceServer[] = [
       { urls: 'stun:stun.l.google.com:19302' }
@@ -72,7 +103,9 @@ export class WebRTCManager {
       }
     }
 
-    return new WebRTCManager(roomId, signalingUrl, iceServers);
+    const m = new WebRTCManager(roomId, signalingUrl, iceServers);
+    m.audioOnly = !!opts.audioOnly;
+    return m;
   }
 
   constructor(roomId: string, signalingUrl: string = DEFAULT_SIGNALING_URL, iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }]) {
@@ -93,6 +126,15 @@ export class WebRTCManager {
 
     this.pc.onconnectionstatechange = () => {
       this.onConnectionStateChange?.(this.pc.connectionState);
+    };
+
+    this.pc.oniceconnectionstatechange = () => {
+      const s = this.pc.iceConnectionState;
+      if (s === 'failed') {
+        // Attempt a single ICE restart automatically. Only the offerer
+        // can initiate; the answerer just waits for the new offer.
+        void this.tryIceRestart();
+      }
     };
 
     this.pc.onicecandidate = (event) => {
@@ -262,6 +304,8 @@ export class WebRTCManager {
       } else {
         this.pendingCandidates.push(msg.payload);
       }
+    } else if (msg.type === 'chat') {
+      await this.handleChatMessage(msg);
     } else if (msg.type === 'end') {
       this.cleanup();
       this.onCallEnded?.(true);
@@ -352,6 +396,203 @@ export class WebRTCManager {
 
     this.worker.postMessage({ type: 'setKeys', senderKey, receiverKey });
     this.sharedKeyReady = true;
+
+    // Derive a third symmetric key dedicated to in-call chat. Both peers
+    // produce the same bytes since the HKDF label is identical on both
+    // sides (no SDP-role split). Usages cover encrypt + decrypt because
+    // either peer may send.
+    this.chatKey = await crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: new Uint8Array(),
+        info: encoder.encode('alfajer-v1-chat')
+      },
+      hkdfBase,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  }
+
+  /** Encrypts a UTF-8 chat string with the per-call chat key and sends it
+   *  through the signaling channel. Random 96-bit IV per message means the
+   *  signaling server never sees plaintext. */
+  public async sendChat(text: string): Promise<void> {
+    if (!this.chatKey) {
+      // Pre-key fallback: send unencrypted so the message isn't lost during
+      // the very first frames of a call. The recipient will accept either.
+      this.sendSignal({ type: 'chat', payload: text });
+      return;
+    }
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      this.chatKey,
+      new TextEncoder().encode(text)
+    );
+    const b64 = (buf: ArrayBuffer | Uint8Array) => {
+      const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+      let s = ''; for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      return btoa(s);
+    };
+    this.sendSignal({ type: 'chat', enc: true, iv: b64(iv), payload: b64(ct) });
+  }
+
+  private async handleChatMessage(msg: any): Promise<void> {
+    try {
+      if (msg.enc && this.chatKey && typeof msg.iv === 'string' && typeof msg.payload === 'string') {
+        const fromB64 = (s: string) => {
+          const bin = atob(s); const out = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+          return out;
+        };
+        const plain = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: fromB64(msg.iv) },
+          this.chatKey,
+          fromB64(msg.payload)
+        );
+        this.onChat?.(new TextDecoder().decode(plain));
+      } else if (typeof msg.payload === 'string') {
+        // Plaintext chat (used during the brief window before chatKey is set).
+        this.onChat?.(msg.payload);
+      }
+    } catch (e) {
+      console.warn('[chat] decrypt failed', e);
+    }
+  }
+
+  // ---- Connection-quality polling ----
+
+  /** Starts a 2-second poll of pc.getStats() and emits a CallQuality each tick. */
+  public startQualityMonitor() {
+    this.stopQualityMonitor();
+    const tick = async () => {
+      const q = await this.computeQuality();
+      if (q.kind !== this.currentQuality.kind
+          || q.rttMs !== this.currentQuality.rttMs
+          || q.lossPct !== this.currentQuality.lossPct) {
+        this.currentQuality = q;
+        this.onQualityChange?.(q);
+      }
+    };
+    tick();
+    this.statsInterval = setInterval(tick, 2000) as unknown as number;
+  }
+
+  public stopQualityMonitor() {
+    if (this.statsInterval !== null) {
+      clearInterval(this.statsInterval);
+      this.statsInterval = null;
+    }
+  }
+
+  private async computeQuality(): Promise<CallQuality> {
+    const ice = this.pc.iceConnectionState;
+    if (ice === 'failed') return { kind: 'failed', rttMs: null, lossPct: null };
+    if (ice === 'disconnected' || ice === 'checking' || ice === 'new') {
+      return { kind: this.iceRestartInFlight ? 'reconnecting' : 'connecting', rttMs: null, lossPct: null };
+    }
+    try {
+      const stats = await this.pc.getStats();
+      let selectedPair: any = null;
+      const candidates: Record<string, any> = {};
+      stats.forEach(r => { if (r.type === 'local-candidate' || r.type === 'remote-candidate') candidates[r.id] = r; });
+      stats.forEach(r => {
+        if (r.type === 'candidate-pair' && (r as any).selected === true) selectedPair = r;
+      });
+      if (!selectedPair) {
+        // Some browsers use 'transport.selectedCandidatePairId' instead.
+        let transportPairId: string | undefined;
+        stats.forEach(r => { if (r.type === 'transport' && (r as any).selectedCandidatePairId) transportPairId = (r as any).selectedCandidatePairId; });
+        if (transportPairId) selectedPair = (stats as any).get?.(transportPairId);
+      }
+      let kind: 'direct' | 'relay' = 'direct';
+      if (selectedPair) {
+        const local = candidates[selectedPair.localCandidateId];
+        if (local && local.candidateType === 'relay') kind = 'relay';
+      }
+      const rttSec = selectedPair?.currentRoundTripTime;
+      const rttMs = typeof rttSec === 'number' ? Math.round(rttSec * 1000) : null;
+      // Loss% — derive from inbound RTP if any stream is incoming
+      let lossPct: number | null = null;
+      stats.forEach(r => {
+        if (r.type === 'inbound-rtp' && (r as any).kind === 'video') {
+          const lost = (r as any).packetsLost ?? 0;
+          const recv = (r as any).packetsReceived ?? 0;
+          const total = lost + recv;
+          if (total > 0) lossPct = Math.round((lost / total) * 1000) / 10;
+        }
+      });
+      return { kind, rttMs, lossPct };
+    } catch {
+      return { kind: 'connecting', rttMs: null, lossPct: null };
+    }
+  }
+
+  /** Attempts to restart ICE on connection failure. Caller must be the
+   *  offerer (initiator); if we're the answerer we simply wait. */
+  public async tryIceRestart(): Promise<boolean> {
+    if (this.iceRestartInFlight) return false;
+    if (this.localSdpRole !== 'offerer') return false;
+    this.iceRestartInFlight = true;
+    this.onIceRestart?.();
+    try {
+      const offer = await this.pc.createOffer({ iceRestart: true });
+      await this.pc.setLocalDescription(offer);
+      const raw = this.ecdhKeyPair
+        ? await crypto.subtle.exportKey('raw', this.ecdhKeyPair.publicKey)
+        : new ArrayBuffer(0);
+      const pub = btoa(String.fromCharCode(...new Uint8Array(raw)));
+      this.sendSignal({
+        type: 'offer',
+        payload: offer,
+        ecdhPublicKey: pub,
+        e2eeSupported: this.myE2EESupport
+      });
+      return true;
+    } catch (e) {
+      console.warn('[ice-restart] failed', e);
+      return false;
+    } finally {
+      this.iceRestartInFlight = false;
+    }
+  }
+
+  // ---- Screen-share toggle ----
+  private screenStream: MediaStream | null = null;
+  private prevVideoTrack: MediaStreamTrack | null = null;
+
+  public isScreenSharing(): boolean { return this.screenStream !== null; }
+
+  public async startScreenShare(): Promise<void> {
+    if (!this.localStream) return;
+    if (this.screenStream) return;
+    const ds = await (navigator.mediaDevices as any).getDisplayMedia({ video: true, audio: false });
+    this.screenStream = ds as MediaStream;
+    const shareTrack = (ds as MediaStream).getVideoTracks()[0];
+    if (!shareTrack) return;
+    const sender = this.pc.getSenders().find(s => s.track?.kind === 'video');
+    if (sender && sender.track) {
+      this.prevVideoTrack = sender.track;
+      await sender.replaceTrack(shareTrack);
+    } else {
+      this.pc.addTrack(shareTrack, this.localStream);
+    }
+    // When the user ends sharing via the browser's "Stop sharing" bar:
+    shareTrack.onended = () => { void this.stopScreenShare(); };
+  }
+
+  public async stopScreenShare(): Promise<void> {
+    if (!this.screenStream) return;
+    const tracks = this.screenStream.getTracks();
+    for (const t of tracks) t.stop();
+    this.screenStream = null;
+    const sender = this.pc.getSenders().find(s => s.track?.kind === 'video');
+    if (sender && this.prevVideoTrack) {
+      await sender.replaceTrack(this.prevVideoTrack);
+      this.prevVideoTrack = null;
+    }
   }
 
   /**
@@ -428,10 +669,16 @@ export class WebRTCManager {
   }
 
   private cleanup() {
+    this.stopQualityMonitor();
+    if (this.screenStream) {
+      this.screenStream.getTracks().forEach(t => t.stop());
+      this.screenStream = null;
+    }
     this.pc.close();
     this.ws.close();
     this.worker.terminate();
     this.sharedSecret = null;
+    this.chatKey = null;
     this.ecdhKeyPair = null;
     if (this.localStream) {
       this.localStream.getTracks().forEach(t => t.stop());

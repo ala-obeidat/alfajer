@@ -43,23 +43,36 @@ const app = new Elysia()
         ws.data.id = crypto.randomUUID();
       }
       const roomId = ws.data.params.roomId;
-      console.log(`[WS] Peer connected: ${ws.data.id} to room ${roomId}`);
-      
-      // Attempt to join the room
+      // Privacy: never log peer IDs or room IDs.
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[WS] peer connected');
+      }
       if (!roomManager.joinRoom(roomId, ws)) {
-        console.warn(`[WS] Room full: ${roomId}`);
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('[WS] room full — rejecting peer');
+        }
         ws.close(1008, 'Room full');
         return;
       }
     },
     message(ws, message) {
       const roomId = ws.data.params.roomId;
-      console.log(`[WS] Message from ${ws.data.id} in room ${roomId}:`, typeof message === 'string' ? message : JSON.stringify(message).substring(0, 100));
-      
+      // Privacy: NEVER log message contents. Chat messages, SDP, and ICE
+      // candidates can contain user-identifying information. Only emit the
+      // message type at debug level so operators can verify the protocol
+      // is flowing without seeing user data.
+      try {
+        const obj = typeof message === 'string' ? JSON.parse(message) : message;
+        const t = (obj && typeof obj === 'object' && 'type' in obj) ? String((obj as any).type).slice(0, 32) : 'unknown';
+        if (process.env.NODE_ENV !== 'production') {
+          // Even in dev we log just type — not payload.
+          console.log(`[WS] ${t} in room ***`);
+        }
+      } catch { /* ignore parse failures, never log raw */ }
+
       const peers = roomManager.getPeers(roomId);
       if (!peers) return;
 
-      // Broadcast message to the other peer in the room
       for (const peer of peers) {
         if (peer.data.id !== ws.data.id) {
           peer.send(typeof message === 'string' ? message : JSON.stringify(message));

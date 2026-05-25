@@ -1,22 +1,32 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { fade, fly } from 'svelte/transition';
   import { getOrGenerateIdentity, clearIdentity } from '../lib/identity';
+  import { prefs } from '$lib/prefs';
+  import { install } from '$lib/install.svelte';
+  import { theme } from '$lib/theme.svelte';
+  import { toast } from '$lib/toast.svelte';
+  import Icon from '$lib/Icon.svelte';
 
   let nickname = $state('');
   let mode = $state<'choose' | 'join'>('choose');
   let roomCode = $state('');
   let error = $state('');
+  let audioOnly = $state(false);
 
   onMount(() => {
-    // If a nickname is already remembered for this tab, pre-fill but allow change
+    // Prefer the existing session identity (so refresh doesn't lose it),
+    // then fall back to the last-used nickname from localStorage.
     const existing = typeof sessionStorage !== 'undefined'
       ? sessionStorage.getItem('alfajer_identity')
       : null;
     if (existing) {
-      // identity is "@<nickname>-<hex>", show just the nickname portion
       const m = existing.match(/^@([^-]+)-/);
       if (m) nickname = m[1];
+    } else {
+      nickname = prefs.getNickname();
     }
+    audioOnly = prefs.getAudioOnly();
   });
 
   function generateRoomId(): string {
@@ -31,9 +41,10 @@
       error = 'Please enter a nickname';
       return false;
     }
-    // Reset stored identity so getOrGenerateIdentity picks up the new nickname
     clearIdentity();
     getOrGenerateIdentity(trimmed);
+    prefs.setNickname(trimmed);
+    prefs.setAudioOnly(audioOnly);
     error = '';
     return true;
   }
@@ -41,7 +52,8 @@
   function startNewCall() {
     if (!persistNickname()) return;
     const id = generateRoomId();
-    window.location.href = `/call/${id}?init=true`;
+    const params = audioOnly ? '?init=true&audio=1' : '?init=true';
+    window.location.href = `/call/${id}${params}`;
   }
 
   function showJoinForm() {
@@ -56,7 +68,8 @@
       error = 'Enter a 6-digit room code';
       return;
     }
-    window.location.href = `/call/${code}`;
+    const params = audioOnly ? '?audio=1' : '';
+    window.location.href = `/call/${code}${params}`;
   }
 
   function backToChoose() {
@@ -67,12 +80,31 @@
 
   function onRoomCodeInput(e: Event) {
     const v = (e.currentTarget as HTMLInputElement).value;
-    // Strip anything non-numeric so paste/IME doesn't break the pattern
     roomCode = v.replace(/\D/g, '').slice(0, 6);
+  }
+
+  function onCodeFocus(e: FocusEvent) {
+    // Mobile keyboard covers about half the screen; scroll the input into
+    // the visible region so it stays above the keyboard.
+    const el = e.currentTarget as HTMLInputElement;
+    setTimeout(() => el.scrollIntoView({ block: 'center', behavior: 'smooth' }), 250);
+  }
+
+  async function installApp() {
+    const ok = await install.show();
+    if (ok) toast.success('Alfajer installed. Find it on your home screen.');
   }
 </script>
 
 <div class="landing">
+  <button class="theme-toggle" onclick={() => theme.cycle()} aria-label="Switch theme">
+    {#key theme.resolved}
+      <span in:fade={{ duration: 150 }}>
+        <Icon name={theme.resolved === 'light' ? 'moon' : 'sun'} size={18} />
+      </span>
+    {/key}
+  </button>
+
   <div class="hero">
     <svg
       class="shield"
@@ -87,19 +119,8 @@
           <stop offset="1" stop-color="#2563eb" />
         </linearGradient>
       </defs>
-      <path
-        d="M32 4 L56 14 V32 C56 46 45 56 32 60 C19 56 8 46 8 32 V14 Z"
-        fill="url(#shieldGrad)"
-        opacity="0.95"
-      />
-      <path
-        d="M22 32 L29 39 L42 26"
-        stroke="white"
-        stroke-width="4"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        fill="none"
-      />
+      <path d="M32 4 L56 14 V32 C56 46 45 56 32 60 C19 56 8 46 8 32 V14 Z" fill="url(#shieldGrad)" opacity="0.95" />
+      <path d="M22 32 L29 39 L42 26" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none" />
       <circle cx="32" cy="50" r="2.2" fill="white" opacity="0.85" />
     </svg>
 
@@ -108,6 +129,12 @@
       Fully anonymous, private, secret <strong>1-to-1</strong> calls.<br />
       <span class="muted">No accounts. No logs. End-to-end via WebRTC.</span>
     </p>
+
+    <div class="badges">
+      <span class="badge" title="AES-256-GCM with per-direction HKDF keys derived from ECDH P-256">🔒 End-to-end encrypted</span>
+      <span class="badge" title="Rooms live only in memory. Last byte erased when the second peer leaves.">📭 Nothing stored</span>
+      <span class="badge" title="Self-hosted signaling and TURN. No third-party trackers.">⚡ Self-hosted</span>
+    </div>
   </div>
 
   <div class="card" role="form">
@@ -126,21 +153,22 @@
     </label>
 
     {#if mode === 'choose'}
-      <div class="actions stacked">
+      <div class="actions stacked" in:fade={{ duration: 150 }}>
         <button class="primary" onclick={startNewCall}>Start new call</button>
         <button class="ghost" onclick={showJoinForm}>Join existing call</button>
       </div>
     {:else}
-      <label class="field">
+      <label class="field" in:fly={{ y: -8, duration: 200 }}>
         <span>6-digit room code</span>
         <input
           type="text"
           value={roomCode}
           oninput={onRoomCodeInput}
+          onfocus={onCodeFocus}
           inputmode="numeric"
           pattern="[0-9]*"
           maxlength="6"
-          placeholder="123456"
+          placeholder="123 456"
           autocomplete="off"
           class="code"
         />
@@ -151,10 +179,25 @@
       </div>
     {/if}
 
+    <label class="checkbox">
+      <input type="checkbox" bind:checked={audioOnly} />
+      <span>Voice-only call (no video)</span>
+    </label>
+
     {#if error}
-      <div class="err" role="alert">{error}</div>
+      <div class="err" role="alert" in:fly={{ y: -8, duration: 150 }}>{error}</div>
     {/if}
   </div>
+
+  {#if install.prompt && !install.installed && !install.isDismissed()}
+    <div class="install-banner" in:fly={{ y: 20, duration: 200 }}>
+      <span>📲 Install Alfajer for one-tap calls and full-screen</span>
+      <div class="install-actions">
+        <button class="primary" onclick={installApp}>Install</button>
+        <button class="ghost" onclick={() => install.dismiss()} aria-label="Dismiss install prompt">Dismiss</button>
+      </div>
+    </div>
+  {/if}
 
   <footer class="foot">
     <span class="muted">Room state lives only in memory. When everyone leaves, it's gone.</span>
@@ -171,6 +214,24 @@
     gap: 2rem;
     padding-block: 1.5rem;
     inline-size: 100%;
+    position: relative;
+  }
+
+  .theme-toggle {
+    position: fixed;
+    inset-block-start: max(env(safe-area-inset-top, 0px), 0.75rem);
+    inset-inline-end: max(env(safe-area-inset-right, 0px), 0.75rem);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.5rem;
+    inline-size: 38px;
+    block-size: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
   }
 
   .hero {
@@ -198,11 +259,26 @@
     margin: 0;
     font-size: clamp(0.95rem, 2.6vw, 1.05rem);
     line-height: 1.5;
-    color: var(--text-primary);
   }
 
-  .muted {
+  .muted { color: var(--text-secondary); }
+
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.4rem;
+    margin-block-start: 0.75rem;
+  }
+
+  .badge {
+    font-size: 0.78rem;
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
     color: var(--text-secondary);
+    cursor: help;
   }
 
   .card {
@@ -215,6 +291,7 @@
     inline-size: 100%;
     max-inline-size: 28rem;
     box-shadow: 0 10px 25px -10px rgb(0 0 0 / 50%);
+    border: 1px solid var(--border);
   }
 
   .field {
@@ -243,35 +320,28 @@
     padding-inline: 0.75rem;
   }
 
-  .actions {
-    display: flex;
-    gap: 0.75rem;
-  }
+  .actions { display: flex; gap: 0.75rem; }
+  .actions.stacked { flex-direction: column; }
+  .actions button { inline-size: 100%; min-block-size: 48px; font-size: 1rem; border-radius: 10px; }
 
-  .actions.stacked {
-    flex-direction: column;
-  }
-
-  .actions button {
-    inline-size: 100%;
-    min-block-size: 48px;
-    font-size: 1rem;
-    border-radius: 10px;
-  }
-
-  .primary {
-    background: var(--accent);
-  }
-
+  .primary { background: var(--accent); }
   .ghost {
     background: transparent;
     color: var(--text-primary);
-    border: 1px solid var(--text-secondary);
+    border: 1px solid var(--border-strong);
   }
+  .ghost:hover { background: var(--code-bg); }
 
-  .ghost:hover {
-    background: rgba(255, 255, 255, 0.04);
+  .checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-block-start: 0.25rem;
+    cursor: pointer;
   }
+  .checkbox input { inline-size: 18px; block-size: 18px; accent-color: var(--accent); }
 
   .err {
     color: #fca5a5;
@@ -283,6 +353,24 @@
     text-align: center;
   }
 
+  .install-banner {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.85rem 1rem;
+    border-radius: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    box-shadow: 0 8px 20px -8px rgb(0 0 0 / 50%);
+    max-inline-size: 28rem;
+    inline-size: 100%;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+  }
+  .install-banner span { flex: 1; }
+  .install-actions { display: flex; gap: 0.5rem; }
+  .install-actions button { padding: 0.5rem 0.9rem; min-block-size: 38px; font-size: 0.9rem; }
+
   .foot {
     text-align: center;
     font-size: 0.85rem;
@@ -290,12 +378,8 @@
   }
 
   @media (max-width: 480px) {
-    .landing {
-      gap: 1.25rem;
-      padding-block: 1rem;
-    }
-    .card {
-      padding: 1.25rem;
-    }
+    .landing { gap: 1.25rem; padding-block: 1rem; }
+    .card { padding: 1.25rem; }
+    .install-banner { flex-direction: column; align-items: stretch; }
   }
 </style>

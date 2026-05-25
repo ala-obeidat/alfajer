@@ -1,101 +1,142 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
+  import { fade, fly } from 'svelte/transition';
   import { page } from '$app/stores';
-  import { WebRTCManager } from '$lib/webrtc';
-  import { t } from 'svelte-i18n';
+  import { WebRTCManager, type CallQuality } from '$lib/webrtc';
   import { goto } from '$app/navigation';
   import { getOrGenerateIdentity, getIdentity, clearIdentity } from '$lib/identity';
-  
+  import { prefs } from '$lib/prefs';
+  import { toast } from '$lib/toast.svelte';
+  import Icon from '$lib/Icon.svelte';
+
   let roomId = $page.params.roomId;
   let identity = $state('');
   let remoteIdentity = $state('');
-  
+  let remoteNickInitial = $derived(remoteIdentity?.match(/^@(.)/)?.[1]?.toUpperCase() ?? '?');
+
   let knockName = $state('');
   let knockStatus = $state<'idle' | 'requesting'>('idle');
   let incomingKnock = $state<string | null>(null);
-  
+
   let localVideoRef: HTMLVideoElement;
   let remoteVideoRef: HTMLVideoElement;
-  
+
   let rtcManager: WebRTCManager | null = null;
-  
+
   let isMuted = $state(false);
   let isCameraOff = $state(false);
-  
+
   let durationMs = $state(0);
   let timerRaf: number;
   let connectionStartTime = 0;
-  
+
   let peerJoined = $state(false);
   let callConnected = $state(false);
+  let codeCopied = $state(false);
   let linkCopied = $state(false);
-  
+
+  // Call modes
   let isInitiator = $page.url.searchParams.has('init');
-  // Auto-knock path: if the user came in with an identity already set
-  // (i.e. they went through the home page) we never show the redundant
-  // "Enter your name to join" dialog. hasJoined becomes true once the
-  // remote peer accepts.
+  let audioOnlyParam = $page.url.searchParams.get('audio') === '1';
   let preSetIdentity = typeof sessionStorage !== 'undefined' ? getIdentity() : null;
   let autoKnocking = !isInitiator && !!preSetIdentity;
   let hasJoined = $state(isInitiator);
+  let mediaReady = $state(false); // gated by the permission pre-prompt
+  let needsPreprompt = $state(!isInitiator && !!preSetIdentity);
 
-  // Clean URL for sharing
   let shareUrl = typeof window !== 'undefined' ?
-    window.location.href.replace('?init=true', '') : '';
+    window.location.href.replace('?init=true', '').replace('&audio=1', '').replace('?audio=1', '') : '';
 
-  // Device switching
+  // Connection-quality pill
+  let quality = $state<CallQuality>({ kind: 'connecting', rttMs: null, lossPct: null });
+
+  // Devices
   let videoInputs = $state<MediaDeviceInfo[]>([]);
   let audioInputs = $state<MediaDeviceInfo[]>([]);
   let audioOutputs = $state<MediaDeviceInfo[]>([]);
-  let currentCameraId = $state<string>('');
-  let currentMicId = $state<string>('');
-  let currentSpeakerId = $state<string>('');
+  let currentCameraId = $state('');
+  let currentMicId = $state('');
+  let currentSpeakerId = $state('');
   let showDeviceMenu = $state(false);
   const speakerSelectSupported = typeof HTMLMediaElement !== 'undefined'
     && 'setSinkId' in HTMLMediaElement.prototype;
 
-  // Draggable local video
+  // Draggable PiP
   let localOffset = $state({ x: 0, y: 0 });
   let localWrapperEl: HTMLDivElement | undefined;
   let dragStart: { px: number; py: number; ox: number; oy: number } | null = null;
 
-  // The Flip button is shown when we know we have 2+ cameras OR when the
-  // device looks like a phone/tablet (coarse pointer). Mobile browsers often
-  // mask deviceIds until permission is granted twice, so we rely on
-  // facingMode for the switch and just need to surface the button.
   let canFlip = $derived(
     videoInputs.length > 1 ||
     (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
   );
 
+  // Speaking-indicator state
+  let localSpeaking = $state(false);
+  let remoteSpeaking = $state(false);
+  let speakingRafs: number[] = [];
+
+  // Camera-off plaque for the remote side
+  let remoteVideoFps = $state<number | null>(null);
+  let remoteVideoOff = $derived(callConnected && remoteVideoFps !== null && remoteVideoFps === 0);
+
+  // Aspect-ratio CSS var
+  function applyRemoteAspect(width: number, height: number) {
+    if (!height) return;
+    document.documentElement.style.setProperty('--remote-aspect', String(width / height));
+  }
+
+  // Chat
+  let chatOpen = $state(false);
+  let chatInput = $state('');
+  let chatLog = $state<Array<{ id: number; from: 'me' | 'them'; text: string; t: number }>>([]);
+  let chatScrollEl: HTMLDivElement | undefined;
+  let chatNextId = 1;
+
+  // Screen share
+  let isScreenSharing = $state(false);
+
+  function notify(msg: string, variant: 'info' | 'success' | 'warn' | 'error' = 'info') {
+    toast.push(msg, variant);
+  }
+
   onMount(async () => {
     if (isInitiator) {
       identity = getOrGenerateIdentity();
-      rtcManager = await WebRTCManager.create(roomId, identity);
+      rtcManager = await WebRTCManager.create(roomId, identity, { audioOnly: audioOnlyParam });
+      isCameraOff = audioOnlyParam;
       setupRtcCallbacks();
+      // Initiator starts media immediately (they confirmed on the home page).
       await startMediaAndCall();
     } else if (preSetIdentity) {
-      // Joiner who already entered a nickname on the home page —
-      // auto-knock instead of showing the redundant overlay.
       identity = preSetIdentity;
       knockName = identity;
-      knockStatus = 'requesting';
-      rtcManager = await WebRTCManager.create(roomId, identity);
-      setupRtcCallbacks();
-      rtcManager.requestJoin(identity);
+      // Permission pre-prompt: user must explicitly tap "Start" before we
+      // request camera + mic. Avoids out-of-context permission dialogs.
+      // mediaReady stays false until user clicks the pre-prompt button.
+    } else {
+      // Direct link landing — show the original knock dialog so the joiner
+      // can type their name.
+      needsPreprompt = false;
     }
-    // else: pre-set identity is missing (someone opened a shared link
-    // directly without going through the home page). Fall through and
-    // render the knock overlay so they can type a name.
   });
-  
+
+  async function confirmPreprompt() {
+    needsPreprompt = false;
+    knockStatus = 'requesting';
+    rtcManager = await WebRTCManager.create(roomId, identity, { audioOnly: audioOnlyParam });
+    isCameraOff = audioOnlyParam;
+    setupRtcCallbacks();
+    rtcManager.requestJoin(identity);
+  }
+
   function setupRtcCallbacks() {
     if (!rtcManager) return;
-    
+
     rtcManager.onPeerJoined = () => {
       peerJoined = true;
     };
-    
+
     rtcManager.onRemoteTrack = (track, streams) => {
       if (remoteVideoRef && streams[0]) {
         if (remoteVideoRef.srcObject !== streams[0]) {
@@ -105,35 +146,47 @@
           });
         }
       }
+      if (track.kind === 'audio' && streams[0]) {
+        attachSpeakingMonitor(streams[0], false);
+      }
     };
-    
+
     rtcManager.onConnectionStateChange = (state) => {
       if (state === 'connected') {
         callConnected = true;
         connectionStartTime = performance.now();
         startTimer();
         rtcManager?.sendIdentity(identity);
+        rtcManager?.startQualityMonitor();
+        if (peerJoined && remoteIdentity) notify(`${prettyId(remoteIdentity)} joined`, 'success');
+        // Restore preferred speaker output if any
+        const sp = prefs.getSpeakerId();
+        if (sp && remoteVideoRef && 'setSinkId' in remoteVideoRef) {
+          (remoteVideoRef as any).setSinkId?.(sp).catch(() => {});
+        }
       } else if (state === 'disconnected' || state === 'failed') {
         stopTimer();
         callConnected = false;
         peerJoined = false;
+        rtcManager?.stopQualityMonitor();
       }
     };
-    
+
     rtcManager.onRemoteIdentity = (id) => {
       remoteIdentity = id;
+      if (callConnected) notify(`${prettyId(id)} joined`, 'success');
     };
-    
+
     rtcManager.onCallEnded = (byRemote) => {
       if (byRemote) {
-        alert(`Call ended by ${remoteIdentity || 'the other user'}`);
-        goto('/');
+        notify(`Call ended by ${prettyId(remoteIdentity) || 'the other user'}`, 'info');
+        setTimeout(() => goto('/'), 1200);
       }
     };
-    
+
     rtcManager.onRoomFull = () => {
-      alert('Room is full (Sealed).');
-      goto('/');
+      notify('Room is full — calls are 1-to-1 and this one is sealed.', 'error');
+      setTimeout(() => goto('/'), 1500);
     };
 
     rtcManager.onJoinRequest = (name) => {
@@ -143,31 +196,77 @@
     rtcManager.onJoinAccepted = async () => {
       knockStatus = 'idle';
       hasJoined = true;
+      mediaReady = true;
       await startMediaAndCall();
     };
 
     rtcManager.onJoinRejected = () => {
-      alert('Your request to join was rejected.');
-      goto('/');
+      notify('Your request to join was rejected.', 'warn');
+      setTimeout(() => goto('/'), 1500);
     };
+
+    rtcManager.onChat = (text) => {
+      chatLog.push({ id: chatNextId++, from: 'them', text, t: Date.now() });
+      autoScrollChat();
+      if (!chatOpen) notify('New message: ' + text.slice(0, 60), 'info');
+    };
+
+    rtcManager.onQualityChange = (q) => { quality = q; };
+    rtcManager.onIceRestart = () => { notify('Reconnecting…', 'warn'); };
+  }
+
+  function prettyId(id: string): string {
+    const m = id?.match(/^@([^-]+)/);
+    return m ? m[1] : (id || '');
   }
 
   async function startMediaAndCall() {
     if (!rtcManager) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-      if (localVideoRef) {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: !audioOnlyParam
+      });
+      if (localVideoRef && !audioOnlyParam) {
         localVideoRef.srcObject = stream;
       }
       await rtcManager.setLocalStream(stream);
       currentCameraId = stream.getVideoTracks()[0]?.getSettings().deviceId || '';
       currentMicId = stream.getAudioTracks()[0]?.getSettings().deviceId || '';
+      // Restore device preferences if set previously
+      await applyDevicePrefs();
       await refreshDevices();
       navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
+      attachSpeakingMonitor(stream, true);
+      // Detect peer's camera-off via inbound-rtp.framesPerSecond
+      startRemoteFpsMonitor();
       await rtcManager.startCall();
     } catch (e) {
       console.error('Failed to get media devices', e);
-      alert('Could not access camera/microphone.');
+      notify('Could not access camera/microphone. Check browser permissions.', 'error');
+    }
+  }
+
+  async function applyDevicePrefs() {
+    if (!rtcManager) return;
+    const wantMic = prefs.getMicId();
+    if (wantMic && wantMic !== currentMicId) {
+      // Only switch if the device exists
+      try {
+        const list = await navigator.mediaDevices.enumerateDevices();
+        if (list.some(d => d.deviceId === wantMic && d.kind === 'audioinput')) {
+          await switchMic(wantMic, true);
+        }
+      } catch {}
+    }
+    const wantCam = prefs.getCameraId();
+    if (wantCam && wantCam !== currentCameraId && !audioOnlyParam) {
+      try {
+        const list = await navigator.mediaDevices.enumerateDevices();
+        if (list.some(d => d.deviceId === wantCam && d.kind === 'videoinput')) {
+          await switchCamera(wantCam, true);
+        }
+      } catch {}
     }
   }
 
@@ -191,11 +290,7 @@
 
   async function acquireVideo(constraints: MediaStreamConstraints[]): Promise<MediaStream | null> {
     for (const c of constraints) {
-      try {
-        return await navigator.mediaDevices.getUserMedia(c);
-      } catch (e) {
-        console.warn('getUserMedia attempt failed', c, e);
-      }
+      try { return await navigator.mediaDevices.getUserMedia(c); } catch (e) { console.warn('getUserMedia failed', c, e); }
     }
     return null;
   }
@@ -208,23 +303,17 @@
     if (localVideoRef && rtcManager.localStream) {
       localVideoRef.srcObject = rtcManager.localStream;
     }
-    if (isCameraOff) {
-      // Preserve "Camera Off" state on the new track
-      rtcManager.toggleVideo(false);
-    }
+    if (isCameraOff) rtcManager.toggleVideo(false);
     currentCameraId = newTrack.getSettings().deviceId || '';
-    // Re-enumerate to pick up any newly-labeled devices
+    if (currentCameraId) prefs.setCameraId(currentCameraId);
     await refreshDevices();
   }
 
-  async function switchCamera(deviceId: string) {
+  async function switchCamera(deviceId: string, silent = false) {
     if (!rtcManager || !deviceId || deviceId === currentCameraId) return;
     const target = videoInputs.find(d => d.deviceId === deviceId);
     const targetFacing = inferFacing(target?.label);
-
-    // Stop current video FIRST — Android holds the camera hardware otherwise
     rtcManager.localStream?.getVideoTracks().forEach(t => t.stop());
-
     const attempts: MediaStreamConstraints[] = [
       { video: { deviceId: { exact: deviceId } }, audio: false }
     ];
@@ -233,10 +322,9 @@
       attempts.push({ video: { facingMode: { ideal: targetFacing } }, audio: false });
     }
     attempts.push({ video: true, audio: false });
-
     const stream = await acquireVideo(attempts);
     if (!stream) {
-      alert('Could not switch camera. Reload the page to restore video.');
+      if (!silent) notify('Could not switch camera. Reload to restore.', 'error');
       return;
     }
     await applyNewVideoStream(stream);
@@ -244,24 +332,16 @@
 
   async function cycleCamera() {
     if (!rtcManager) return;
-
-    // Prefer facingMode for the Flip path — Android Chrome resolves it much
-    // more reliably than deviceId, and on iOS Safari deviceIds are masked
-    // until permission is granted twice in a row.
     const currentTrack = rtcManager.localStream?.getVideoTracks()[0];
     const settings = currentTrack?.getSettings();
     const currentFacing = (settings?.facingMode as 'user' | 'environment' | undefined)
       ?? inferFacing(videoInputs.find(d => d.deviceId === currentCameraId)?.label);
-    const targetFacing: 'user' | 'environment' =
-      currentFacing === 'environment' ? 'user' : 'environment';
-
+    const targetFacing: 'user' | 'environment' = currentFacing === 'environment' ? 'user' : 'environment';
     rtcManager.localStream?.getVideoTracks().forEach(t => t.stop());
-
     const attempts: MediaStreamConstraints[] = [
       { video: { facingMode: { exact: targetFacing } }, audio: false },
       { video: { facingMode: { ideal: targetFacing } }, audio: false }
     ];
-    // Fall back to deviceId rotation through our enumerated list
     if (videoInputs.length > 1) {
       const idx = videoInputs.findIndex(d => d.deviceId === currentCameraId);
       const next = videoInputs[(idx + 1) % videoInputs.length];
@@ -269,100 +349,151 @@
         attempts.push({ video: { deviceId: { exact: next.deviceId } }, audio: false });
       }
     }
-    // Last resort: any camera the OS will give us
     attempts.push({ video: true, audio: false });
-
     const stream = await acquireVideo(attempts);
-    if (!stream) {
-      alert('Could not switch camera. Reload the page to restore video.');
-      return;
-    }
+    if (!stream) { notify('Could not switch camera.', 'error'); return; }
     await applyNewVideoStream(stream);
   }
 
-  async function switchMic(deviceId: string) {
+  async function switchMic(deviceId: string, silent = false) {
     if (!rtcManager || !deviceId || deviceId === currentMicId) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { deviceId: { exact: deviceId } },
-        video: false
+        audio: { deviceId: { exact: deviceId } }, video: false
       });
       const newTrack = stream.getAudioTracks()[0];
       await rtcManager.replaceAudioTrack(newTrack);
-      // Re-apply mute state to the new track
-      if (rtcManager.localStream) {
-        rtcManager.toggleAudio(!isMuted);
-      }
+      if (rtcManager.localStream) rtcManager.toggleAudio(!isMuted);
       currentMicId = newTrack.getSettings().deviceId || deviceId;
+      prefs.setMicId(currentMicId);
+      attachSpeakingMonitor(stream, true);
     } catch (e) {
-      console.error('switchMic failed', e);
-      alert('Could not switch microphone.');
+      if (!silent) notify('Could not switch microphone.', 'error');
+      console.error(e);
     }
   }
 
   async function switchSpeaker(deviceId: string) {
     if (!remoteVideoRef || !deviceId) return;
     if (!('setSinkId' in remoteVideoRef)) {
-      alert('Your browser does not support selecting an audio output.');
+      notify('Browser does not allow choosing the audio output.', 'warn');
       return;
     }
     try {
-      // @ts-ignore — setSinkId is not in all TS lib targets
+      // @ts-ignore
       await remoteVideoRef.setSinkId(deviceId);
       currentSpeakerId = deviceId;
+      prefs.setSpeakerId(deviceId);
     } catch (e) {
-      console.error('switchSpeaker failed', e);
-      alert('Could not switch speaker.');
+      notify('Could not switch speaker.', 'error');
+      console.error(e);
     }
   }
 
-  // Draggable local-video handlers
-  function onLocalPointerDown(e: PointerEvent) {
-    if (!localWrapperEl) return;
-    dragStart = {
-      px: e.clientX,
-      py: e.clientY,
-      ox: localOffset.x,
-      oy: localOffset.y
-    };
-    didDrag = false;
-    localWrapperEl.setPointerCapture(e.pointerId);
+  // ---- Speaking detection ----
+  function attachSpeakingMonitor(stream: MediaStream, isLocal: boolean) {
+    const audio = stream.getAudioTracks()[0];
+    if (!audio) return;
+    try {
+      const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!AC) return;
+      const ctx = new AC();
+      const src = ctx.createMediaStreamSource(new MediaStream([audio]));
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      src.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      let lastFlip = 0;
+      const SPEAKING = 22; // tweakable threshold
+      const tick = () => {
+        analyser.getByteFrequencyData(data);
+        let sum = 0; for (let i = 0; i < data.length; i++) sum += data[i];
+        const avg = sum / data.length;
+        const now = performance.now();
+        const speaking = avg > SPEAKING;
+        if (now - lastFlip > 120) {
+          if (isLocal && localSpeaking !== speaking) { localSpeaking = speaking; lastFlip = now; }
+          if (!isLocal && remoteSpeaking !== speaking) { remoteSpeaking = speaking; lastFlip = now; }
+        }
+        speakingRafs.push(requestAnimationFrame(tick));
+      };
+      tick();
+    } catch (e) {
+      console.warn('speaking monitor failed', e);
+    }
   }
 
-  function onLocalPointerMove(e: PointerEvent) {
-    if (!dragStart || !localWrapperEl) return;
-    const dx = e.clientX - dragStart.px;
-    const dy = e.clientY - dragStart.py;
-    const rect = localWrapperEl.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    // Clamp so the box keeps at least 24px on-screen each direction.
-    // rect already reflects the current transform, so we work in offset deltas.
-    const proposedX = dragStart.ox + dx;
-    const proposedY = dragStart.oy + dy;
-    const minOffX = -((rect.left - dragStart.ox) + rect.width - 24);
-    const maxOffX = (vw - (rect.left - dragStart.ox) - 24);
-    const minOffY = -((rect.top - dragStart.oy) + rect.height - 24);
-    const maxOffY = (vh - (rect.top - dragStart.oy) - 24);
-    localOffset = {
-      x: Math.min(maxOffX, Math.max(minOffX, proposedX)),
-      y: Math.min(maxOffY, Math.max(minOffY, proposedY))
-    };
+  // ---- Remote camera-off detection ----
+  let fpsPollHandle: number | null = null;
+  function startRemoteFpsMonitor() {
+    stopRemoteFpsMonitor();
+    fpsPollHandle = setInterval(async () => {
+      if (!rtcManager) return;
+      try {
+        const stats = await rtcManager.pc.getStats();
+        let videoFps: number | null = null;
+        stats.forEach(r => {
+          if (r.type === 'inbound-rtp' && (r as any).kind === 'video') {
+            const f = (r as any).framesPerSecond;
+            if (typeof f === 'number') videoFps = f;
+          }
+        });
+        remoteVideoFps = videoFps;
+      } catch {}
+    }, 2000) as unknown as number;
+  }
+  function stopRemoteFpsMonitor() {
+    if (fpsPollHandle !== null) { clearInterval(fpsPollHandle); fpsPollHandle = null; }
   }
 
-  function onLocalPointerUp(e: PointerEvent) {
-    if (!localWrapperEl) return;
-    try { localWrapperEl.releasePointerCapture(e.pointerId); } catch {}
-    dragStart = null;
+  // ---- Aspect ratio detection ----
+  function onRemoteLoaded() {
+    if (!remoteVideoRef) return;
+    applyRemoteAspect(remoteVideoRef.videoWidth, remoteVideoRef.videoHeight);
   }
-  
+
+  // ---- Chat ----
+  async function sendChat() {
+    if (!chatInput.trim() || !rtcManager) return;
+    const text = chatInput.trim();
+    await rtcManager.sendChat(text);
+    chatLog.push({ id: chatNextId++, from: 'me', text, t: Date.now() });
+    chatInput = '';
+    autoScrollChat();
+  }
+  async function autoScrollChat() {
+    await tick();
+    if (chatScrollEl) chatScrollEl.scrollTop = chatScrollEl.scrollHeight;
+  }
+
+  // ---- Screen share ----
+  async function toggleScreenShare() {
+    if (!rtcManager) return;
+    if (isScreenSharing) {
+      await rtcManager.stopScreenShare();
+      isScreenSharing = false;
+      notify('Stopped sharing screen.', 'info');
+    } else {
+      try {
+        await rtcManager.startScreenShare();
+        isScreenSharing = true;
+        notify('Sharing screen — only the peer sees this.', 'success');
+      } catch (e) {
+        // User canceled the OS-level picker; not an error worth a toast.
+        console.warn(e);
+      }
+    }
+  }
+
+  // ---- Knock flow for direct-link visitors ----
   async function sendJoinRequest() {
     if (!knockName) return;
     knockStatus = 'requesting';
     identity = knockName;
-
+    prefs.setNickname(knockName);
     if (!rtcManager) {
-      rtcManager = await WebRTCManager.create(roomId, identity);
+      rtcManager = await WebRTCManager.create(roomId, identity, { audioOnly: audioOnlyParam });
+      isCameraOff = audioOnlyParam;
       setupRtcCallbacks();
     }
     rtcManager.requestJoin(knockName);
@@ -374,159 +505,189 @@
       incomingKnock = null;
     }
   }
-
   function rejectIncoming() {
-    if (incomingKnock) {
-      rtcManager?.rejectJoin();
-      incomingKnock = null;
-    }
+    if (incomingKnock) { rtcManager?.rejectJoin(); incomingKnock = null; }
   }
-  
+
   onDestroy(() => {
     stopTimer();
+    stopRemoteFpsMonitor();
+    speakingRafs.forEach(h => cancelAnimationFrame(h));
     rtcManager?.endCall();
     if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
       navigator.mediaDevices.removeEventListener('devicechange', refreshDevices);
     }
   });
-  
+
   function startTimer() {
-    function tick() {
-      durationMs = performance.now() - connectionStartTime;
-      timerRaf = requestAnimationFrame(tick);
-    }
-    timerRaf = requestAnimationFrame(tick);
+    const tickT = () => { durationMs = performance.now() - connectionStartTime; timerRaf = requestAnimationFrame(tickT); };
+    timerRaf = requestAnimationFrame(tickT);
   }
-  
-  function stopTimer() {
-    if (timerRaf) cancelAnimationFrame(timerRaf);
-  }
-  
-  function toggleMute() {
-    isMuted = !isMuted;
-    rtcManager?.toggleAudio(!isMuted);
-  }
-  
-  function toggleCamera() {
-    isCameraOff = !isCameraOff;
-    rtcManager?.toggleVideo(!isCameraOff);
-  }
-  
-  function endCall() {
-    rtcManager?.endCall();
-    goto('/');
-  }
-  
+  function stopTimer() { if (timerRaf) cancelAnimationFrame(timerRaf); }
+
+  function toggleMute() { isMuted = !isMuted; rtcManager?.toggleAudio(!isMuted); }
+  function toggleCamera() { isCameraOff = !isCameraOff; rtcManager?.toggleVideo(!isCameraOff); }
+  function endCall() { rtcManager?.endCall(); goto('/'); }
   function formatDuration(ms: number) {
     const totalSec = Math.floor(ms / 1000);
     const m = Math.floor(totalSec / 60).toString().padStart(2, '0');
     const s = (totalSec % 60).toString().padStart(2, '0');
     return `${m}:${s}`;
   }
-  
-  function copyLink() {
-    navigator.clipboard.writeText(shareUrl)
-      .then(() => {
-        linkCopied = true;
-        setTimeout(() => linkCopied = false, 2000);
-      });
+  function groupedRoomCode(code: string): string {
+    return code.length === 6 ? `${code.slice(0,3)} ${code.slice(3)}` : code;
   }
 
-  function copyCode() {
-    navigator.clipboard.writeText(roomId)
-      .then(() => {
-        codeCopied = true;
-        setTimeout(() => codeCopied = false, 2000);
-      });
+  // ---- Copy actions (with long-press option on touch) ----
+  let copyPressTimer: number | null = null;
+  function startCopyPress() {
+    if (copyPressTimer !== null) return;
+    copyPressTimer = setTimeout(() => { void copyCode(); copyPressTimer = null; }, 280) as unknown as number;
   }
-
+  function cancelCopyPress() {
+    if (copyPressTimer !== null) { clearTimeout(copyPressTimer); copyPressTimer = null; }
+  }
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(roomId);
+      codeCopied = true; setTimeout(() => codeCopied = false, 1800);
+    } catch { notify('Copy failed; long-press to select the digits.', 'warn'); }
+  }
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      linkCopied = true; setTimeout(() => linkCopied = false, 2000);
+    } catch { notify('Copy failed.', 'warn'); }
+  }
   function shareWhatsApp() {
     const text = `Join my private Alfajer call.\nRoom code: ${roomId}\n${shareUrl}`;
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
   }
-
   async function nativeShare() {
     if (typeof navigator === 'undefined' || !('share' in navigator)) return;
     try {
-      await navigator.share({
-        title: 'Alfajer call',
-        text: `Join my private Alfajer call. Room code: ${roomId}`,
-        url: shareUrl
-      });
-    } catch (_) {
-      // User dismissed the share sheet — no-op
-    }
+      await navigator.share({ title: 'Alfajer call', text: `Join my private Alfajer call. Room code: ${roomId}`, url: shareUrl });
+    } catch (_) { /* user canceled */ }
+  }
+  const canNativeShare = typeof navigator !== 'undefined' && 'share' in navigator;
+
+  // ---- Draggable PiP ----
+  function onLocalPointerDown(e: PointerEvent) {
+    if (!localWrapperEl) return;
+    dragStart = { px: e.clientX, py: e.clientY, ox: localOffset.x, oy: localOffset.y };
+    localWrapperEl.setPointerCapture(e.pointerId);
+  }
+  function onLocalPointerMove(e: PointerEvent) {
+    if (!dragStart || !localWrapperEl) return;
+    const dx = e.clientX - dragStart.px;
+    const dy = e.clientY - dragStart.py;
+    const rect = localWrapperEl.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const proposedX = dragStart.ox + dx;
+    const proposedY = dragStart.oy + dy;
+    const minOffX = -((rect.left - dragStart.ox) + rect.width - 24);
+    const maxOffX = (vw - (rect.left - dragStart.ox) - 24);
+    const minOffY = -((rect.top - dragStart.oy) + rect.height - 24);
+    const maxOffY = (vh - (rect.top - dragStart.oy) - 24);
+    localOffset = {
+      x: Math.min(maxOffX, Math.max(minOffX, proposedX)),
+      y: Math.min(maxOffY, Math.max(minOffY, proposedY))
+    };
+  }
+  function onLocalPointerUp(e: PointerEvent) {
+    if (!localWrapperEl) return;
+    try { localWrapperEl.releasePointerCapture(e.pointerId); } catch {}
+    dragStart = null;
   }
 
-  let codeCopied = $state(false);
-  const canNativeShare = typeof navigator !== 'undefined' && 'share' in navigator;
+  function qualityBadge(q: CallQuality): { color: string; label: string; tooltip: string } {
+    switch (q.kind) {
+      case 'direct': return {
+        color: '#10b981',
+        label: 'Direct',
+        tooltip: 'Peer-to-peer connection (best path)' + (q.rttMs != null ? ` · ${q.rttMs}ms` : '') + (q.lossPct != null ? ` · ${q.lossPct}% loss` : '')
+      };
+      case 'relay': return {
+        color: '#f59e0b',
+        label: 'Relay',
+        tooltip: 'Routed through TURN' + (q.rttMs != null ? ` · ${q.rttMs}ms` : '') + (q.lossPct != null ? ` · ${q.lossPct}% loss` : '')
+      };
+      case 'reconnecting': return { color: '#f59e0b', label: 'Reconnecting', tooltip: 'Trying to recover the connection' };
+      case 'failed': return { color: '#ef4444', label: 'Failed', tooltip: 'Connection lost' };
+      default: return { color: '#94a3b8', label: 'Connecting', tooltip: 'Negotiating ICE candidates' };
+    }
+  }
 </script>
 
 <div class="call-container">
-  {#if !hasJoined}
-    <div class="overlay-status invite-overlay">
+  <!-- Connection-quality pill in the top-left -->
+  {#if callConnected}
+    <div class="quality-pill" title={qualityBadge(quality).tooltip} in:fade>
+      <span class="dot" style="background:{qualityBadge(quality).color}"></span>
+      <span>{qualityBadge(quality).label}</span>
+      {#if quality.rttMs != null}<span class="rtt">{quality.rttMs}ms</span>{/if}
+    </div>
+  {/if}
+
+  {#if needsPreprompt}
+    <div class="overlay-status invite-overlay" in:fade>
+      <div class="card">
+        <h2>Ready to join?</h2>
+        <p class="muted">
+          Alfajer will ask for camera + microphone on the next screen.
+          Streams never leave the call — no recording, no logs.
+        </p>
+        <div class="actions">
+          <button class="primary" onclick={confirmPreprompt}>Start</button>
+          <button class="ghost" onclick={() => goto('/')}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  {:else if !hasJoined}
+    <div class="overlay-status invite-overlay" in:fade>
       {#if knockStatus === 'requesting'}
         <h2>Joining call…</h2>
         <p>Waiting for the host to accept</p>
       {:else}
-        <h2>You have been invited to a call</h2>
-        <input type="text" placeholder="Enter your name to join" bind:value={knockName} />
-        <button onclick={sendJoinRequest} disabled={!knockName}>Ask to Join</button>
+        <div class="card">
+          <span class="invited-pill">📩 Someone invited you to a private call</span>
+          <h2>Enter your name to join</h2>
+          <input type="text" placeholder="Your nickname" bind:value={knockName} />
+          <button class="primary" onclick={sendJoinRequest} disabled={!knockName}>Ask to join</button>
+        </div>
       {/if}
     </div>
   {:else if !callConnected}
-    <div class="overlay-status">
+    <div class="overlay-status" in:fade>
       {#if !peerJoined}
         <h2>Share this room code</h2>
         <button
           type="button"
           class="room-code"
+          onpointerdown={startCopyPress}
+          onpointerup={cancelCopyPress}
+          onpointercancel={cancelCopyPress}
+          onpointerleave={cancelCopyPress}
           onclick={copyCode}
           title="Tap to copy code"
-          aria-label="Room code {roomId}, tap to copy"
+          aria-label="Room code, tap to copy"
         >
-          {roomId}
-          <span class="room-code-hint">{codeCopied ? 'Copied!' : 'tap to copy'}</span>
+          <span class="digits">{groupedRoomCode(roomId)}</span>
+          <span class="copy-state">
+            {#if codeCopied}<Icon name="check" size={14} /> Copied!{:else}<Icon name="copy" size={14} /> tap to copy{/if}
+          </span>
         </button>
 
         <div class="share-row">
           <button class="share-btn wa" onclick={shareWhatsApp} aria-label="Share via WhatsApp">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-              <path
-                fill="currentColor"
-                d="M19.05 4.91A10 10 0 0 0 4.86 19.39L4 23l3.74-.85a10 10 0 0 0 14.97-8.63 9.94 9.94 0 0 0-3.66-8.61Zm-7.07 15.43h-.01a8.32 8.32 0 0 1-4.24-1.17l-.3-.18-2.22.51.54-2.16-.2-.32a8.36 8.36 0 1 1 6.43 3.32Zm4.6-6.27c-.25-.13-1.49-.74-1.72-.82-.23-.08-.4-.13-.57.13-.17.25-.65.82-.8.99-.15.17-.3.19-.55.06a6.84 6.84 0 0 1-3.4-2.97c-.26-.45.26-.42.74-1.39.08-.17.04-.32-.02-.45-.06-.13-.57-1.37-.78-1.88-.21-.5-.42-.43-.57-.44h-.49a.95.95 0 0 0-.69.32 2.92 2.92 0 0 0-.9 2.16c0 1.27.93 2.5 1.06 2.67.13.17 1.82 2.78 4.41 3.9.62.27 1.1.43 1.48.55.62.2 1.18.17 1.62.1.5-.07 1.49-.6 1.71-1.18.21-.59.21-1.09.15-1.19-.06-.1-.23-.16-.49-.29Z"
-              />
-            </svg>
-            <span>WhatsApp</span>
+            <span aria-hidden="true">WhatsApp</span>
           </button>
-
           <button class="share-btn" onclick={copyLink} aria-label="Copy invite link">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-              <path
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 1 0-7-7l-1 1m1 9a5 5 0 0 0-7 0l-3 3a5 5 0 1 0 7 7l1-1"
-              />
-            </svg>
-            <span>{linkCopied ? 'Link copied' : 'Copy link'}</span>
+            <Icon name="copy" size={16} /><span>{linkCopied ? 'Link copied' : 'Copy link'}</span>
           </button>
-
           {#if canNativeShare}
             <button class="share-btn" onclick={nativeShare} aria-label="More share options">
-              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-                <path
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7M16 6l-4-4-4 4M12 2v14"
-                />
-              </svg>
-              <span>Share…</span>
+              <Icon name="share" size={16} /><span>Share…</span>
             </button>
           {/if}
         </div>
@@ -539,7 +700,7 @@
   {/if}
 
   {#if incomingKnock}
-    <div class="overlay-status knock-overlay">
+    <div class="overlay-status knock-overlay" in:fade>
       <div class="card">
         <h2>{incomingKnock} wants to join</h2>
         <div class="actions">
@@ -551,46 +712,73 @@
   {/if}
 
   <div class="videos">
-    <div class="video-wrapper remote-video-wrapper">
-      <video bind:this={remoteVideoRef} autoplay playsinline class="remote-video"></video>
+    <div class="video-wrapper remote-video-wrapper" class:speaking={remoteSpeaking}>
+      {#if remoteVideoOff}
+        <div class="video-off-state" in:fade>
+          <div class="avatar">{remoteNickInitial}</div>
+          <div class="off-label">{prettyId(remoteIdentity) || 'Connected'}</div>
+          <div class="off-sub">Camera off</div>
+        </div>
+      {:else}
+        <video
+          bind:this={remoteVideoRef}
+          autoplay
+          playsinline
+          onloadedmetadata={onRemoteLoaded}
+          class="remote-video"
+        ></video>
+      {/if}
       {#if remoteIdentity}
-        <div class="name-badge">{remoteIdentity}</div>
+        <div class="name-badge">{prettyId(remoteIdentity)}</div>
       {/if}
     </div>
 
-    <div
-      class="video-wrapper local-video-wrapper"
-      class:dragging={dragStart !== null}
-      bind:this={localWrapperEl}
-      onpointerdown={onLocalPointerDown}
-      onpointermove={onLocalPointerMove}
-      onpointerup={onLocalPointerUp}
-      onpointercancel={onLocalPointerUp}
-      style="transform: translate({localOffset.x}px, {localOffset.y}px)"
-      role="presentation"
-    >
-      <video bind:this={localVideoRef} autoplay muted playsinline class="local-video"></video>
-      <div class="name-badge">{identity} (You)</div>
-    </div>
+    {#if !audioOnlyParam}
+      <div
+        class="video-wrapper local-video-wrapper"
+        class:dragging={dragStart !== null}
+        class:speaking={localSpeaking}
+        bind:this={localWrapperEl}
+        onpointerdown={onLocalPointerDown}
+        onpointermove={onLocalPointerMove}
+        onpointerup={onLocalPointerUp}
+        onpointercancel={onLocalPointerUp}
+        style="transform: translate({localOffset.x}px, {localOffset.y}px)"
+        role="presentation"
+      >
+        <video bind:this={localVideoRef} autoplay muted playsinline class="local-video"></video>
+        <div class="name-badge">{prettyId(identity)} (You)</div>
+      </div>
+    {/if}
   </div>
 
-  <div class="controls">
-    <div class="timer">{formatDuration(durationMs)}</div>
-    <button onclick={toggleMute}>
-      {isMuted ? $t('unmute') : $t('mute')}
+  <div class="controls" class:audio-only={audioOnlyParam || isCameraOff}>
+    <div class="timer" aria-label="Call duration">{formatDuration(durationMs)}</div>
+    <button class="ctrl" onclick={toggleMute} title={isMuted ? 'Unmute' : 'Mute'} aria-label={isMuted ? 'Unmute' : 'Mute'} class:active={isMuted}>
+      <Icon name={isMuted ? 'micOff' : 'mic'} size={22} />
     </button>
-    <button onclick={toggleCamera}>
-      {isCameraOff ? $t('cameraOn') : $t('cameraOff')}
-    </button>
-    {#if canFlip}
-      <button onclick={cycleCamera} title="Switch camera" aria-label="Switch camera">
-        Flip
+    {#if !audioOnlyParam}
+      <button class="ctrl" onclick={toggleCamera} title={isCameraOff ? 'Turn camera on' : 'Turn camera off'} aria-label={isCameraOff ? 'Camera on' : 'Camera off'} class:active={isCameraOff}>
+        <Icon name={isCameraOff ? 'camOff' : 'cam'} size={22} />
       </button>
     {/if}
-    <button onclick={() => { refreshDevices(); showDeviceMenu = !showDeviceMenu; }} aria-haspopup="dialog">
-      Devices
+    {#if canFlip && !audioOnlyParam && !isCameraOff}
+      <button class="ctrl" onclick={cycleCamera} title="Switch camera" aria-label="Switch camera">
+        <Icon name="flip" size={22} />
+      </button>
+    {/if}
+    <button class="ctrl" onclick={toggleScreenShare} class:active={isScreenSharing} title={isScreenSharing ? 'Stop sharing' : 'Share screen'} aria-label="Share screen">
+      <Icon name="screenShare" size={22} />
     </button>
-    <button class="danger" onclick={endCall}>End Call</button>
+    <button class="ctrl" onclick={() => chatOpen = !chatOpen} class:active={chatOpen} title="Chat" aria-label="Chat">
+      <Icon name="chat" size={22} />
+    </button>
+    <button class="ctrl" onclick={() => { refreshDevices(); showDeviceMenu = !showDeviceMenu; }} title="Devices" aria-label="Devices" aria-haspopup="dialog">
+      <Icon name="gear" size={22} />
+    </button>
+    <button class="ctrl danger" onclick={endCall} title="End call" aria-label="End call">
+      <Icon name="hangup" size={22} />
+    </button>
   </div>
 
   {#if showDeviceMenu}
@@ -601,36 +789,26 @@
       role="button"
       tabindex="-1"
       aria-label="Close device picker"
+      transition:fade={{ duration: 120 }}
     ></div>
-    <div class="device-menu" role="dialog" aria-label="Audio &amp; video devices">
+    <div class="device-menu" role="dialog" aria-label="Audio &amp; video devices" transition:fly={{ y: 12, duration: 180 }}>
       <div class="device-row">
         <label>
           <span>Microphone</span>
-          <select
-            value={currentMicId}
-            onchange={(e) => switchMic((e.currentTarget as HTMLSelectElement).value)}
-          >
-            {#if audioInputs.length === 0}
-              <option value="">(none detected)</option>
-            {/if}
+          <select value={currentMicId} onchange={(e) => switchMic((e.currentTarget as HTMLSelectElement).value)}>
+            {#if audioInputs.length === 0}<option value="">(none detected)</option>{/if}
             {#each audioInputs as d}
               <option value={d.deviceId}>{d.label || `Microphone ${d.deviceId.slice(0, 6)}`}</option>
             {/each}
           </select>
         </label>
       </div>
-
       <div class="device-row">
         <label>
           <span>Speaker / Audio output</span>
           {#if speakerSelectSupported}
-            <select
-              value={currentSpeakerId}
-              onchange={(e) => switchSpeaker((e.currentTarget as HTMLSelectElement).value)}
-            >
-              {#if audioOutputs.length === 0}
-                <option value="">(none detected — your OS controls output)</option>
-              {/if}
+            <select value={currentSpeakerId} onchange={(e) => switchSpeaker((e.currentTarget as HTMLSelectElement).value)}>
+              {#if audioOutputs.length === 0}<option value="">(none detected — your OS controls output)</option>{/if}
               {#each audioOutputs as d}
                 <option value={d.deviceId}>{d.label || `Output ${d.deviceId.slice(0, 6)}`}</option>
               {/each}
@@ -640,26 +818,54 @@
           {/if}
         </label>
       </div>
-
-      <div class="device-row">
-        <label>
-          <span>Camera</span>
-          <select
-            value={currentCameraId}
-            onchange={(e) => switchCamera((e.currentTarget as HTMLSelectElement).value)}
-          >
-            {#if videoInputs.length === 0}
-              <option value="">(none detected)</option>
-            {/if}
-            {#each videoInputs as d}
-              <option value={d.deviceId}>{d.label || `Camera ${d.deviceId.slice(0, 6)}`}</option>
-            {/each}
-          </select>
-        </label>
-      </div>
-
+      {#if !audioOnlyParam}
+        <div class="device-row">
+          <label>
+            <span>Camera</span>
+            <select value={currentCameraId} onchange={(e) => switchCamera((e.currentTarget as HTMLSelectElement).value)}>
+              {#if videoInputs.length === 0}<option value="">(none detected)</option>{/if}
+              {#each videoInputs as d}
+                <option value={d.deviceId}>{d.label || `Camera ${d.deviceId.slice(0, 6)}`}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+      {/if}
       <button class="device-close" onclick={() => (showDeviceMenu = false)}>Close</button>
     </div>
+  {/if}
+
+  {#if chatOpen}
+    <aside class="chat" transition:fly={{ x: 320, duration: 200 }}>
+      <header>
+        <span>Chat</span>
+        <button class="ctrl ghost" onclick={() => chatOpen = false} aria-label="Close chat"><Icon name="close" size={18} /></button>
+      </header>
+      <div class="chat-log" bind:this={chatScrollEl}>
+        {#each chatLog as m (m.id)}
+          <div class="msg msg-{m.from}">
+            <span class="bubble">{m.text}</span>
+          </div>
+        {:else}
+          <div class="chat-empty">No messages yet. Say hi 👋</div>
+        {/each}
+      </div>
+      <form
+        class="chat-input"
+        onsubmit={(e) => { e.preventDefault(); void sendChat(); }}
+      >
+        <input
+          type="text"
+          bind:value={chatInput}
+          placeholder="Type a message…"
+          autocomplete="off"
+          maxlength="1000"
+        />
+        <button class="ctrl" type="submit" disabled={!chatInput.trim()} aria-label="Send">
+          <Icon name="send" size={20} />
+        </button>
+      </form>
+    </aside>
   {/if}
 </div>
 
@@ -674,359 +880,236 @@
     z-index: 1;
   }
 
-  .overlay-status {
+  /* Connection-quality pill */
+  .quality-pill {
     position: absolute;
-    inset: 0;
-    z-index: 30;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    background-color: rgba(0, 0, 0, 0.8);
-    color: white;
-    gap: 1.5rem;
-    padding: 1rem;
-    text-align: center;
-  }
-
-  .share-box {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    background: var(--bg-secondary);
-    padding: 1rem;
-    border-radius: 8px;
-    align-items: center;
-    max-inline-size: 100%;
-  }
-
-  .share-box input {
-    flex: 1;
-    min-inline-size: 200px;
-    inline-size: 300px;
-    max-inline-size: 100%;
-    background: var(--bg-primary);
-  }
-
-  .room-code {
-    display: inline-flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.25rem;
-    padding: 0.9rem 1.4rem;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    border-radius: 14px;
-    color: white;
-    font-size: clamp(1.8rem, 7vw, 2.5rem);
-    font-weight: 700;
-    letter-spacing: 0.35em;
-    font-variant-numeric: tabular-nums;
-    cursor: pointer;
-    user-select: all;
-    min-block-size: auto;
-  }
-
-  .room-code:hover { background: rgba(255, 255, 255, 0.12); }
-
-  .room-code-hint {
-    font-size: 0.75rem;
-    font-weight: 400;
-    letter-spacing: 0.05em;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-  }
-
-  .share-row {
-    display: flex;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-    justify-content: center;
-    max-inline-size: 100%;
-  }
-
-  .share-btn {
+    inset-block-start: max(env(safe-area-inset-top, 0px), 0.6rem);
+    inset-inline-start: max(env(safe-area-inset-left, 0px), 0.6rem);
+    z-index: 45;
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.6rem 1rem;
+    gap: 0.4rem;
+    padding: 0.35rem 0.65rem;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.1);
     color: white;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    font-size: 0.95rem;
-    min-block-size: 44px;
-    cursor: pointer;
+    font-size: 0.78rem;
+  }
+  .quality-pill .dot {
+    inline-size: 7px; block-size: 7px; border-radius: 50%;
+  }
+  .quality-pill .rtt {
+    opacity: 0.7;
+    font-variant-numeric: tabular-nums;
   }
 
-  .share-btn:hover { background: rgba(255, 255, 255, 0.16); }
-
-  .share-btn.wa {
-    background: #25D366;
-    border-color: #25D366;
-    color: white;
+  .overlay-status {
+    position: absolute; inset: 0; z-index: 30;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background-color: rgba(0, 0, 0, 0.8);
+    color: white; gap: 1.5rem; padding: 1rem; text-align: center;
   }
 
-  .share-btn.wa:hover { background: #1ebe5d; }
-
-  .hint {
-    margin: 0;
+  .invited-pill {
+    display: inline-block;
+    padding: 0.35rem 0.85rem;
+    border-radius: 999px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
     color: var(--text-secondary);
     font-size: 0.85rem;
-    text-align: center;
-    max-inline-size: 90vw;
-  }
-
-  .link-line {
-    color: var(--text-primary);
-    word-break: break-all;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.8rem;
+    margin-block-end: 0.35rem;
   }
 
   .card {
     background-color: var(--bg-secondary);
-    padding: 2rem;
-    border-radius: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
+    padding: 2rem; border-radius: 12px;
+    display: flex; flex-direction: column; gap: 1rem;
     align-items: center;
     box-shadow: 0 10px 15px -3px rgb(0 0 0 / 20%);
     max-inline-size: 100%;
+    color: var(--text-primary);
   }
-
-  .actions {
-    display: flex;
-    gap: 1rem;
-    flex-wrap: wrap;
-    justify-content: center;
-  }
+  .card .muted { color: var(--text-secondary); font-size: 0.95rem; max-inline-size: 28ch; }
+  .actions { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
+  .actions button { min-block-size: 44px; padding-inline: 1.2rem; border-radius: 999px; }
+  .actions .ghost { background: transparent; color: var(--text-primary); border: 1px solid var(--border-strong); }
 
   .invite-overlay input {
-    padding: 0.75rem 1rem;
-    border-radius: 6px;
+    padding: 0.75rem 1rem; border-radius: 6px;
     border: 1px solid var(--text-muted);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    inline-size: min(250px, 100%);
-    font-size: 1rem;
+    background: var(--bg-primary); color: var(--text-primary);
+    inline-size: min(250px, 100%); font-size: 1rem;
   }
+
+  .room-code {
+    display: inline-flex; flex-direction: column; align-items: center; gap: 0.3rem;
+    padding: 0.9rem 1.4rem; background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 14px;
+    color: white; font-size: clamp(1.8rem, 7vw, 2.5rem); font-weight: 700;
+    letter-spacing: 0.18em; font-variant-numeric: tabular-nums;
+    cursor: pointer; min-block-size: auto;
+  }
+  .room-code .digits { user-select: all; }
+  .room-code .copy-state {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    font-size: 0.72rem; font-weight: 400; letter-spacing: 0.08em;
+    color: rgba(255,255,255,0.75); text-transform: uppercase;
+  }
+  .room-code:hover { background: rgba(255, 255, 255, 0.12); }
+
+  .share-row { display: flex; gap: 0.6rem; flex-wrap: wrap; justify-content: center; max-inline-size: 100%; }
+  .share-btn {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    padding: 0.6rem 1rem; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1); color: white;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    font-size: 0.95rem; min-block-size: 44px; cursor: pointer;
+  }
+  .share-btn:hover { background: rgba(255, 255, 255, 0.16); }
+  .share-btn.wa { background: #25D366; border-color: #25D366; color: white; }
+  .share-btn.wa:hover { background: #1ebe5d; }
+
+  .hint { margin: 0; color: var(--text-secondary); font-size: 0.85rem; text-align: center; max-inline-size: 90vw; }
+  .link-line { color: var(--text-primary); word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
 
   .videos {
-    position: relative;
-    flex: 1;
-    min-block-size: 0;
-    overflow: hidden;
+    position: relative; flex: 1; min-block-size: 0; overflow: hidden;
   }
 
-  .video-wrapper {
-    position: relative;
-  }
+  .video-wrapper { position: relative; transition: box-shadow 0.15s ease; }
+  .video-wrapper.speaking { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.85); }
 
-  .remote-video-wrapper {
-    inline-size: 100%;
-    block-size: 100%;
-  }
-
+  .remote-video-wrapper { inline-size: 100%; block-size: 100%; }
   .remote-video {
-    inline-size: 100%;
-    block-size: 100%;
-    object-fit: cover;
-    background-color: #000;
+    inline-size: 100%; block-size: 100%;
+    object-fit: cover; background-color: #000;
   }
+
+  .video-off-state {
+    inline-size: 100%; block-size: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: white; gap: 0.5rem; background: linear-gradient(135deg, #1e293b, #0f172a);
+  }
+  .avatar {
+    inline-size: 96px; block-size: 96px;
+    border-radius: 50%; background: var(--accent); color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 3rem; font-weight: 700;
+  }
+  .off-label { font-size: 1.1rem; font-weight: 600; }
+  .off-sub { font-size: 0.85rem; color: var(--text-secondary); }
 
   .local-video-wrapper {
     position: absolute;
-    inset-block-start: 1rem;
+    inset-block-start: max(env(safe-area-inset-top, 0px), 1rem);
     inset-inline-end: 1rem;
     inline-size: clamp(110px, 22vw, 200px);
     z-index: 10;
-    cursor: grab;
-    touch-action: none;
-    user-select: none;
-    will-change: transform;
-    transition: box-shadow 0.15s ease;
+    cursor: grab; touch-action: none; user-select: none; will-change: transform;
   }
-
-  .local-video-wrapper.dragging {
-    cursor: grabbing;
-    box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
-  }
-
-  .local-video {
-    inline-size: 100%;
-    border-radius: 12px;
-    box-shadow: 0 4px 6px rgb(0 0 0 / 30%);
-    display: block;
-    pointer-events: none;
-  }
+  .local-video-wrapper.dragging { cursor: grabbing; }
+  .local-video { inline-size: 100%; border-radius: 12px; box-shadow: 0 4px 6px rgb(0 0 0 / 30%); display: block; pointer-events: none; }
 
   .name-badge {
-    position: absolute;
-    inset-block-end: 0.5rem;
-    inset-inline-start: 0.5rem;
-    background: rgba(0, 0, 0, 0.6);
-    color: white;
-    padding: 0.25rem 0.6rem;
-    border-radius: 4px;
-    font-size: 0.875rem;
-    z-index: 20;
-    pointer-events: none;
+    position: absolute; inset-block-end: 0.5rem; inset-inline-start: 0.5rem;
+    background: rgba(0, 0, 0, 0.6); color: white;
+    padding: 0.25rem 0.6rem; border-radius: 4px; font-size: 0.875rem;
+    z-index: 20; pointer-events: none;
   }
 
   .controls {
-    position: absolute;
-    inset-block-end: 0;
-    inset-inline-start: 0;
-    inset-inline-end: 0;
+    position: absolute; inset-block-end: 0; inset-inline-start: 0; inset-inline-end: 0;
     z-index: 40;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    padding: 1rem;
-    justify-content: center;
-    align-items: center;
+    display: flex; flex-wrap: wrap; gap: 0.65rem; padding: 1rem;
+    justify-content: center; align-items: center;
     background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0));
     pointer-events: none;
   }
+  .controls > * { pointer-events: auto; }
 
-  .controls > * {
-    pointer-events: auto;
+  .ctrl {
+    inline-size: 48px; min-block-size: 48px;
+    padding: 0; border-radius: 999px;
+    background: rgba(40, 40, 50, 0.85); color: white; border: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; backdrop-filter: blur(6px);
   }
-
-  .controls button {
-    min-block-size: 44px;
-    padding-inline: 1rem;
-    border-radius: 999px;
-    background: rgba(40, 40, 50, 0.85);
-    color: white;
-    border: none;
-    font-size: 0.95rem;
-    cursor: pointer;
-    backdrop-filter: blur(6px);
-  }
-
-  .controls button:hover {
-    background: rgba(60, 60, 75, 0.95);
-  }
-
-  .controls button.danger {
-    background: var(--danger);
-  }
+  .ctrl:hover { background: rgba(60, 60, 75, 0.95); }
+  .ctrl.active { background: rgba(96, 165, 250, 0.95); }
+  .ctrl.danger { background: var(--danger); }
+  .ctrl.danger:hover { background: var(--danger-hover); }
+  .ctrl:disabled { opacity: 0.5; }
 
   .timer {
     font-variant-numeric: tabular-nums;
-    font-size: 1.05rem;
-    font-weight: 700;
-    color: white;
-    padding: 0.4rem 0.8rem;
-    border-radius: 999px;
+    font-size: 1rem; font-weight: 700; color: white;
+    padding: 0.4rem 0.8rem; border-radius: 999px;
     background: rgba(0, 0, 0, 0.6);
   }
 
   .device-backdrop {
-    position: absolute;
-    inset: 0;
-    z-index: 45;
-    background: rgba(0, 0, 0, 0.5);
-    border: none;
-    padding: 0;
+    position: absolute; inset: 0; z-index: 45;
+    background: rgba(0, 0, 0, 0.5); border: none; padding: 0;
   }
 
   .device-menu {
-    position: absolute;
-    inset-block-end: 5rem;
-    inset-inline-start: 50%;
-    transform: translateX(-50%);
-    z-index: 50;
-    background: var(--bg-secondary);
-    border-radius: 12px;
-    padding: 1.25rem;
+    position: absolute; inset-block-end: 5.5rem; inset-inline-start: 50%;
+    transform: translateX(-50%); z-index: 50;
+    background: var(--bg-secondary); border-radius: 12px; padding: 1.25rem;
     box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
+    display: flex; flex-direction: column; gap: 0.75rem;
     inline-size: min(380px, calc(100vw - 2rem));
-    max-block-size: calc(100dvh - 8rem);
-    overflow-y: auto;
+    max-block-size: calc(100dvh - 8rem); overflow-y: auto;
   }
 
-  .device-menu .device-row label {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    color: var(--text-primary);
-    font-size: 0.95rem;
-  }
-
+  .device-menu .device-row label { display: flex; flex-direction: column; gap: 0.4rem; color: var(--text-primary); font-size: 0.95rem; }
   .device-menu select {
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    border: 1px solid var(--text-secondary);
-    border-radius: 8px;
-    padding-block: 0.6rem;
-    padding-inline: 0.75rem;
-    font-size: 0.95rem;
-    outline: none;
+    background: var(--bg-primary); color: var(--text-primary);
+    border: 1px solid var(--text-secondary); border-radius: 8px;
+    padding-block: 0.6rem; padding-inline: 0.75rem; font-size: 0.95rem; outline: none;
   }
-
-  .device-menu select:focus {
-    border-color: var(--accent);
-  }
-
-  .device-menu .hint {
-    color: var(--text-secondary);
-    font-size: 0.85rem;
-  }
+  .device-menu select:focus { border-color: var(--accent); }
+  .device-menu .hint { color: var(--text-secondary); font-size: 0.85rem; }
 
   .device-close {
-    align-self: flex-end;
-    margin-block-start: 0.25rem;
-    padding-block: 0.5rem;
-    padding-inline: 1rem;
-    border-radius: 8px;
-    background: var(--accent);
-    color: white;
-    border: none;
-    cursor: pointer;
+    align-self: flex-end; margin-block-start: 0.25rem;
+    padding-block: 0.5rem; padding-inline: 1rem; border-radius: 8px;
+    background: var(--accent); color: white; border: none; cursor: pointer;
   }
+
+  /* Chat */
+  .chat {
+    position: absolute;
+    inset-block-start: 0; inset-block-end: 5.5rem; inset-inline-end: 0;
+    z-index: 42; inline-size: min(360px, 100vw);
+    background: rgba(15, 23, 42, 0.95); backdrop-filter: blur(12px);
+    color: white; display: flex; flex-direction: column;
+    border-inline-start: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .chat header { display: flex; align-items: center; justify-content: space-between; padding: 0.85rem 1rem; border-block-end: 1px solid rgba(255, 255, 255, 0.08); font-weight: 600; }
+  .chat-log { flex: 1; overflow-y: auto; padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .chat-empty { color: var(--text-secondary); font-size: 0.9rem; text-align: center; padding: 2rem 0; }
+  .msg { display: flex; }
+  .msg-me { justify-content: flex-end; }
+  .msg .bubble {
+    max-inline-size: 80%; padding: 0.5rem 0.85rem; border-radius: 14px;
+    background: rgba(255, 255, 255, 0.1); font-size: 0.95rem; word-wrap: break-word;
+  }
+  .msg-me .bubble { background: var(--accent); color: white; }
+  .chat-input { display: flex; gap: 0.5rem; padding: 0.75rem; border-block-start: 1px solid rgba(255, 255, 255, 0.08); }
+  .chat-input input {
+    flex: 1; background: var(--bg-primary); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 0.85rem; min-block-size: 42px;
+  }
+  .chat-input .ctrl { inline-size: 42px; min-block-size: 42px; }
 
   @media (max-width: 600px) {
-    .local-video-wrapper {
-      inset-block-start: 0.75rem;
-      inset-inline-end: 0.75rem;
-      inline-size: clamp(90px, 28vw, 140px);
-    }
-
-    .controls {
-      gap: 0.5rem;
-      padding: 0.75rem;
-    }
-
-    .controls button {
-      padding-inline: 0.75rem;
-      font-size: 0.9rem;
-    }
-
-    .timer {
-      font-size: 0.9rem;
-      padding: 0.3rem 0.6rem;
-    }
-
-    .overlay-status h2 {
-      font-size: 1.25rem;
-    }
-  }
-
-  @media (max-width: 380px) {
-    .controls {
-      flex-direction: row;
-      justify-content: space-around;
-    }
-
-    .controls button {
-      padding-inline: 0.5rem;
-    }
+    .local-video-wrapper { inset-inline-end: 0.75rem; inline-size: clamp(90px, 28vw, 140px); }
+    .controls { gap: 0.45rem; padding: 0.75rem; }
+    .timer { font-size: 0.9rem; padding: 0.3rem 0.6rem; }
+    .chat { inline-size: 100vw; inset-inline-start: 0; }
   }
 </style>

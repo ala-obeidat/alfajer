@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="Alfajer — anonymous 1-to-1 calls">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="shieldGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#3b82f6" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#3b82f6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="900" cy="315" r="280" fill="url(#glow)"/>
+
+  <!-- Shield -->
+  <g transform="translate(820 110)">
+    <path
+      d="M200 0 L380 70 V210 C380 320 305 405 200 435 C95 405 20 320 20 210 V70 Z"
+      fill="url(#shieldGrad)"
+      opacity="0.95"
+    />
+    <path
+      d="M120 215 L180 275 L290 165"
+      stroke="white" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none"
+    />
+    <circle cx="200" cy="350" r="10" fill="white" opacity="0.85"/>
+  </g>
+
+  <!-- Text -->
+  <g font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" fill="#f8fafc">
+    <text x="80" y="240" font-size="110" font-weight="800" letter-spacing="-3">Alfajer</text>
+    <text x="80" y="310" font-size="36" font-weight="500" fill="#cbd5e1">Fully anonymous 1-to-1 calls.</text>
+    <text x="80" y="360" font-size="28" font-weight="400" fill="#94a3b8">No accounts. No logs. End-to-end via WebRTC.</text>
+
+    <g transform="translate(80 460)" font-size="22" font-weight="500">
+      <rect x="0"    y="0" width="232" height="56" rx="28" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.18)"/>
+      <text x="116" y="36" text-anchor="middle" fill="#e2e8f0">🔒 End-to-end encrypted</text>
+
+      <rect x="248"  y="0" width="200" height="56" rx="28" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.18)"/>
+      <text x="348" y="36" text-anchor="middle" fill="#e2e8f0">📭 Nothing stored</text>
+
+      <rect x="464"  y="0" width="184" height="56" rx="28" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.18)"/>
+      <text x="556" y="36" text-anchor="middle" fill="#e2e8f0">⚡ Self-hosted</text>
+    </g>
+
+    <text x="80" y="580" font-size="22" font-weight="500" fill="#60a5fa">alfajer.alaobeidat.com</text>
+  </g>
+</svg>
