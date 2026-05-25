@@ -93,8 +93,25 @@
   let chatScrollEl: HTMLDivElement | undefined;
   let chatNextId = 1;
 
-  // Screen share
+  // Screen share — only offer it on platforms that actually implement it.
+  // Mobile phone browsers expose getDisplayMedia on the global but always
+  // reject with NotAllowedError because the OS-level capture flow isn't
+  // wired in. iOS Safari simply doesn't implement it. Restrict to:
+  //   * the API exists, AND
+  //   * the device is NOT a phone-class touch device (coarse pointer +
+  //     iPhone/iPad/Android UA + small viewport).
   let isScreenSharing = $state(false);
+  function canScreenShare(): boolean {
+    if (typeof navigator === 'undefined') return false;
+    const md: any = navigator.mediaDevices as any;
+    if (!md || typeof md.getDisplayMedia !== 'function') return false;
+    const ua = navigator.userAgent || '';
+    const isMobilePhone =
+      /iPhone|iPod|Android.*Mobile/i.test(ua) ||
+      (window.matchMedia('(pointer: coarse)').matches && window.innerWidth < 820);
+    return !isMobilePhone;
+  }
+  const screenShareSupported = canScreenShare();
 
   function notify(msg: string, variant: 'info' | 'success' | 'warn' | 'error' = 'info') {
     toast.push(msg, variant);
@@ -469,6 +486,10 @@
   // ---- Screen share ----
   async function toggleScreenShare() {
     if (!rtcManager) return;
+    if (!screenShareSupported) {
+      notify("Screen sharing isn't supported on this device. Try a desktop browser.", 'warn');
+      return;
+    }
     if (isScreenSharing) {
       await rtcManager.stopScreenShare();
       isScreenSharing = false;
@@ -478,8 +499,15 @@
         await rtcManager.startScreenShare();
         isScreenSharing = true;
         notify('Sharing screen — only the peer sees this.', 'success');
-      } catch (e) {
-        // User canceled the OS-level picker; not an error worth a toast.
+      } catch (e: any) {
+        const name = e?.name || '';
+        if (name === 'NotAllowedError' || name === 'AbortError') {
+          // User canceled the OS-level picker — no toast needed.
+        } else if (name === 'NotSupportedError') {
+          notify("Your browser doesn't support screen sharing.", 'warn');
+        } else {
+          notify('Could not start screen sharing.', 'error');
+        }
         console.warn(e);
       }
     }
@@ -767,9 +795,11 @@
         <Icon name="flip" size={22} />
       </button>
     {/if}
-    <button class="ctrl" onclick={toggleScreenShare} class:active={isScreenSharing} title={isScreenSharing ? 'Stop sharing' : 'Share screen'} aria-label="Share screen">
-      <Icon name="screenShare" size={22} />
-    </button>
+    {#if screenShareSupported}
+      <button class="ctrl" onclick={toggleScreenShare} class:active={isScreenSharing} title={isScreenSharing ? 'Stop sharing' : 'Share screen'} aria-label="Share screen">
+        <Icon name="screenShare" size={22} />
+      </button>
+    {/if}
     <button class="ctrl" onclick={() => chatOpen = !chatOpen} class:active={chatOpen} title="Chat" aria-label="Chat">
       <Icon name="chat" size={22} />
     </button>

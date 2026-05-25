@@ -90,8 +90,15 @@ export class WebRTCManager {
         );
         if (credsRes.ok) {
           const creds = await credsRes.json() as { username: string; credential: string };
+          // Support comma-separated URLs in PUBLIC_TURN_URL so we can offer
+          // multiple TURN transports at once (e.g. UDP for low latency when
+          // direct STUN punching fails but UDP is still allowed, plus
+          // TURNS/TCP as the universal fallback for restrictive networks).
+          // WebRTC's ICE algorithm picks the lowest-latency working
+          // candidate, so adding URLs is monotonically a performance win.
+          const turnUrls = PUBLIC_TURN_URL.split(',').map(s => s.trim()).filter(Boolean);
           iceServers.push({
-            urls: PUBLIC_TURN_URL,
+            urls: turnUrls.length === 1 ? turnUrls[0] : turnUrls,
             username: creds.username,
             credential: creds.credential
           });
