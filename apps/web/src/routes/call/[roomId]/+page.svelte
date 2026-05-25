@@ -541,6 +541,12 @@
     stopTimer();
     stopRemoteFpsMonitor();
     speakingRafs.forEach(h => cancelAnimationFrame(h));
+    // Detach MediaStreams from the <video> elements explicitly. Without this,
+    // some Chromium versions keep the underlying RTCRtpReceiver alive in a
+    // detached state across navigations, slowly growing the heap. The
+    // audit caught this as a Medium-severity leak.
+    if (localVideoRef)  { try { (localVideoRef as any).srcObject = null;  } catch {} }
+    if (remoteVideoRef) { try { (remoteVideoRef as any).srcObject = null; } catch {} }
     rtcManager?.endCall();
     if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
       navigator.mediaDevices.removeEventListener('devicechange', refreshDevices);
@@ -739,6 +745,13 @@
     </div>
   {/if}
 
+  <!-- Visually hidden live region that announces speaker changes to
+       assistive tech. The threshold-cross debounce in attachSpeakingMonitor
+       keeps this from spamming the screen reader. -->
+  <div class="sr-only" aria-live="polite" aria-atomic="true">
+    {#if remoteSpeaking}{prettyId(remoteIdentity) || 'Remote peer'} is speaking{/if}
+  </div>
+
   <div class="videos">
     <div class="video-wrapper remote-video-wrapper" class:speaking={remoteSpeaking}>
       {#if remoteVideoOff}
@@ -908,6 +921,20 @@
     background-color: #000;
     overflow: hidden;
     z-index: 1;
+  }
+
+  /* Screen-reader-only utility: takes the element out of visual flow without
+     hiding it from assistive tech (display:none would). */
+  .sr-only {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   /* Connection-quality pill */

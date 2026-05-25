@@ -2,59 +2,98 @@ import { Elysia, t } from 'elysia';
 import { cors } from '@elysiajs/cors';
 import { roomManager } from './room';
 import { generateTurnCredentials } from './turn';
+import { RateLimiter, clientIp } from './rate-limit';
 
 const PORT = process.env.PORT || 3000;
 const TURN_STATIC_AUTH_SECRET = process.env.TURN_STATIC_AUTH_SECRET || '';
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
+
+// Per-IP rate limits. /turn-credentials is a HMAC mint; we cap it tightly so
+// an attacker can't generate unlimited credentials and use the TURN server
+// as a free relay. The WS upgrade limit blunts brute-force room-code
+// enumeration without affecting a normal user (≈ 4 connects per call).
+const turnCredLimiter = new RateLimiter(20,  'turn-creds');
+const wsOpenLimiter   = new RateLimiter(30,  'ws-open');
+
+// Origin whitelist for WebSocket upgrades — defends against Cross-Site
+// WebSocket Hijacking. Browser code from any other origin is rejected
+// before the upgrade completes. Native (non-browser) clients omit Origin
+// entirely and are still allowed; the threat model targets a malicious
+// page running in a victim's browser.
+const ORIGIN_ALLOWLIST = new Set<string>(
+  ALLOWED_ORIGIN
+    ? ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean)
+    : []
+);
+
+function isOriginAllowed(origin: string | undefined | null): boolean {
+  if (!origin) return true;                       // native / curl / non-browser
+  if (ORIGIN_ALLOWLIST.size === 0) return true;   // dev mode — no allowlist configured
+  return ORIGIN_ALLOWLIST.has(origin);
+}
 
 // Signaling-only WebRTC handshake relay. Never logs payloads, IPs, or room IDs.
 // Stateless room registry lives entirely in process memory — see ./room.
 const app = new Elysia()
-  .use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }))
-  .onError(({ code, error }) => {
-    // Errors only to stderr at WARN+, never including payload content, IPs, or room IDs.
+  // CORS: tight allowlist if configured, '*' only in dev.
+  .use(cors({
+    origin: ALLOWED_ORIGIN
+      ? ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean)
+      : '*'
+  }))
+  .onError(({ code }) => {
     console.warn(`[WARN] Application error occurred. Code: ${code}`);
     return new Response('Internal Server Error', { status: 500 });
   })
   .get('/healthz', () => ({ ok: true }))
-  .get('/turn-credentials', ({ query }) => {
-    const username = query.username as string;
+  .get('/turn-credentials', ({ query, headers }) => {
+    const ip = clientIp(headers as any);
+    if (!turnCredLimiter.hit(ip)) {
+      // 429 Too Many Requests — Retry-After hints the client to back off.
+      return new Response('Too Many Requests', {
+        status: 429,
+        headers: { 'Retry-After': '60' }
+      });
+    }
+    const username = (query as any).username as string;
     if (!username) {
       return new Response('Missing username', { status: 400 });
     }
     return generateTurnCredentials(username, TURN_STATIC_AUTH_SECRET);
   }, {
-    query: t.Object({
-      username: t.String()
-    })
+    query: t.Object({ username: t.String() })
   })
   .ws('/call/:roomId', {
-    // Validate every inbound payload with TypeBox
     body: t.Object({
       type: t.String(),
       payload: t.Optional(t.Any()),
       ecdhPublicKey: t.Optional(t.String()),
-      // Peer advertises its support for the RTCRtpScriptTransform E2EE path.
-      // Only when BOTH peers send true does the client actually apply transforms.
-      // Older clients that omit it are treated as not supporting E2EE.
       e2eeSupported: t.Optional(t.Boolean()),
-      // E2EE chat fields. Both peers derive the same AES-GCM "chat" key from
-      // the shared ECDH secret; this server only relays opaque ciphertext.
-      //   enc = true   → payload is base64(AES-GCM ciphertext), iv = base64 nonce
-      //   enc absent   → payload is plaintext (used only during the pre-key window)
       enc: t.Optional(t.Boolean()),
       iv:  t.Optional(t.String())
     }, {
-      // Future-proofing: ignore unknown fields so a newer client can add
-      // experimental message fields without immediately breaking older
-      // signaling deployments.
       additionalProperties: true
     }),
     open(ws) {
+      // --- Origin whitelist (CSWSH protection) ---
+      const hdrs = (ws.data as any).headers as Record<string, string> | undefined;
+      const origin = hdrs?.origin ?? hdrs?.Origin;
+      if (!isOriginAllowed(origin)) {
+        ws.close(1008, 'Origin not allowed');
+        return;
+      }
+
+      // --- Per-IP rate limit (brute force protection) ---
+      const ip = clientIp(hdrs as any);
+      if (!wsOpenLimiter.hit(ip)) {
+        ws.close(1013, 'Too many connections');
+        return;
+      }
+
       if (!ws.data.id) {
         ws.data.id = crypto.randomUUID();
       }
       const roomId = ws.data.params.roomId;
-      // Privacy: never log peer IDs or room IDs.
       if (process.env.NODE_ENV !== 'production') {
         console.log('[WS] peer connected');
       }
@@ -68,18 +107,13 @@ const app = new Elysia()
     },
     message(ws, message) {
       const roomId = ws.data.params.roomId;
-      // Privacy: NEVER log message contents. Chat messages, SDP, and ICE
-      // candidates can contain user-identifying information. Only emit the
-      // message type at debug level so operators can verify the protocol
-      // is flowing without seeing user data.
       try {
         const obj = typeof message === 'string' ? JSON.parse(message) : message;
         const t = (obj && typeof obj === 'object' && 'type' in obj) ? String((obj as any).type).slice(0, 32) : 'unknown';
         if (process.env.NODE_ENV !== 'production') {
-          // Even in dev we log just type — not payload.
           console.log(`[WS] ${t} in room ***`);
         }
-      } catch { /* ignore parse failures, never log raw */ }
+      } catch { /* never log raw */ }
 
       const peers = roomManager.getPeers(roomId);
       if (!peers) return;
@@ -93,17 +127,13 @@ const app = new Elysia()
     close(ws) {
       const roomId = ws.data.params.roomId;
       const peers = roomManager.getPeers(roomId);
-      
       if (peers) {
-        // If either peer disconnects, we should notify or close the other
         for (const peer of peers) {
           if (peer.data.id !== ws.data.id) {
             peer.close(1000, 'Peer disconnected');
           }
         }
       }
-      
-      // Purge the room entry immediately
       roomManager.leaveRoom(roomId, ws);
     }
   })
