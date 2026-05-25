@@ -1,45 +1,89 @@
 # Alfajer
 
-Alfajer is a stateless, privacy-first WebRTC 1:1 video/audio calling PWA. It strictly enforces anonymity with End-to-End Encryption (E2EE), zero persistent storage (no DB, no Redis, no logs), and logical-only CSS.
+**Alfajer** is a fully anonymous, private, secret **1-to-1** video/audio calling
+PWA. No accounts, no databases, no logs, no analytics, no cookies. Just a
+6-digit room code, your nickname for the session, and the other person.
+
+Live: <https://alfajer.alaobeidat.com>
+
+## What it does
+
+- Open the home page, type a nickname, and either:
+  - **Start new call** — generates a random 6-digit room code and drops you into
+    the room. Share the code (or the link) over WhatsApp, native share sheet,
+    or copy-to-clipboard.
+  - **Join existing call** — type the 6-digit room code your peer sent you.
+- Calls are 1-to-1. The room **seals** the moment two peers connect — a third
+  browser trying the same code is rejected by the signaling server.
+- When both peers leave, the room is gone. There is nothing to "delete"
+  because nothing was ever persisted.
+
+## Privacy guarantees
+
+- **No persistent storage.** Rooms live only in the signaling server's process
+  memory. No DB. No Redis. No log files. Server crashes wipe state.
+- **No logs.** The signaling server intentionally does not log peer IPs, room
+  IDs, signaling payloads, or call metadata.
+- **No accounts.** Your "identity" is a session-only string that exists in
+  `sessionStorage` and disappears the instant you close the tab.
+- **DTLS-SRTP** media encryption is on by default — that's built into WebRTC.
+  An additional script-transform AES-GCM layer is in the codebase but disabled
+  pending a cross-browser capability handshake.
 
 ## Architecture
 
-This project is a monorepo utilizing Bun workspaces:
-- `apps/web`: SvelteKit frontend configured as a PWA, localized natively to Arabic (default) and English.
-- `apps/signaling`: ElysiaJS + Bun WebSocket signaling server with TypeBox validation.
-- `infra/coturn`: Hardened CoTURN configuration.
+Bun-managed monorepo:
 
-## Key Features
-- **Privacy-First Design**: No server-side persistence. No IP logs. No payload inspection. No analytics. No Cookies.
-- **True Statelessness**: Rooms are tracked purely in-memory. If a call drops, the room is annihilated.
-- **E2EE**: Encrypted media streams utilizing `RTCRtpScriptTransform` with AES-256-GCM. Shared keys are established via ECDH over the signaling channel.
-- **RTL Native**: Complete localization and Right-to-Left alignment enforcement through logical CSS properties (physical CSS like `margin-left` are actively linted against).
+| Path | What it is |
+|------|------------|
+| `apps/web` | SvelteKit PWA (English-only), `adapter-static` → deployed to Cloudflare Workers/Pages. |
+| `apps/signaling` | Bun + ElysiaJS WebSocket signaling server with TypeBox-validated payloads. In-memory room registry. |
+| `infra/coturn` | Hardened CoTURN configuration + env-driven install script (Let's Encrypt cert, renewal hook, hardened defaults). |
 
-## Local Development
+Production topology:
 
-### Requirements
-- [Bun](https://bun.sh/)
-- Node (Optional for certain scripts)
+- `alfajer.alaobeidat.com` → Cloudflare Workers (static SvelteKit build, served via CF edge).
+- `signaling.alaobeidat.com` → Caddy reverse-proxy → Bun signaling on port 3000.
+- `turn.alaobeidat.com:5349` → CoTURN with TURNS over TLS (port 443 reserved for Caddy).
+- Single Hetzner Cloud CAX (ARM64) box runs CoTURN + Caddy + signaling under systemd.
 
-### Running Locally
+## Local development
 
-1. Install dependencies:
+Requirements: [Bun](https://bun.sh/) ≥ 1.2.
+
 ```bash
 bun install
+bun run dev      # starts signaling on :3000 and web on :5173 in parallel
+bun run test     # vitest across workspaces
+bun run lint     # ESLint
+bun run lint:css # Stylelint
 ```
 
-2. Start development servers (frontend and signaling concurrently):
-```bash
-bun run dev
-```
+For local web → local signaling, no env vars are needed — the web client
+falls back to `ws://localhost:3000` when `PUBLIC_SIGNALING_URL` is unset.
 
-3. Run Tests (Vitest across workspaces):
-```bash
-bun run test
-```
+## Deployment notes
 
-4. Run Linting (ESLint + Stylelint):
-```bash
-bun run lint
-bun run lint:css
-```
+The Cloudflare Pages build is configured to:
+
+- **Build command:** `cd apps/web && bun install --no-frozen-lockfile && bun run build`
+- **Deploy command:** `cd apps/web && npx wrangler deploy`
+- **Required env vars (Production):**
+  - `PUBLIC_SIGNALING_URL` — e.g. `https://signaling.alaobeidat.com`
+  - `PUBLIC_TURN_URL` — e.g. `turns:turn.alaobeidat.com:5349?transport=tcp`
+
+The server-side install is driven by `infra/coturn/install.sh`, which expects
+`TURN_DOMAIN`, `TURN_REALM`, `LETSENCRYPT_EMAIL`, and `TURN_STATIC_AUTH_SECRET`
+in the environment. The same secret must be set in `apps/signaling/.env` so
+TURN authentication HMACs line up.
+
+## Browser support
+
+- Tested on recent Chrome desktop and Chrome / Safari on mobile (Android & iOS).
+- WebRTC + WebSocket + `getUserMedia` are the only browser APIs strictly
+  required. Google Translate auto-translate is suppressed app-wide so the UI
+  doesn't get rewritten mid-call.
+
+## License
+
+Private — not open source. All rights reserved.

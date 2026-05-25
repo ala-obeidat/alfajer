@@ -413,6 +413,35 @@
         setTimeout(() => linkCopied = false, 2000);
       });
   }
+
+  function copyCode() {
+    navigator.clipboard.writeText(roomId)
+      .then(() => {
+        codeCopied = true;
+        setTimeout(() => codeCopied = false, 2000);
+      });
+  }
+
+  function shareWhatsApp() {
+    const text = `Join my private Alfajer call.\nRoom code: ${roomId}\n${shareUrl}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
+  }
+
+  async function nativeShare() {
+    if (typeof navigator === 'undefined' || !('share' in navigator)) return;
+    try {
+      await navigator.share({
+        title: 'Alfajer call',
+        text: `Join my private Alfajer call. Room code: ${roomId}`,
+        url: shareUrl
+      });
+    } catch (_) {
+      // User dismissed the share sheet — no-op
+    }
+  }
+
+  let codeCopied = $state(false);
+  const canNativeShare = typeof navigator !== 'undefined' && 'share' in navigator;
 </script>
 
 <div class="call-container">
@@ -429,13 +458,63 @@
   {:else if !callConnected}
     <div class="overlay-status">
       {#if !peerJoined}
-        <h2>Waiting for someone to join...</h2>
-        <div class="share-box">
-          <input type="text" readonly value={shareUrl} />
-          <button onclick={copyLink}>{linkCopied ? 'Copied!' : 'Copy Link'}</button>
+        <h2>Share this room code</h2>
+        <button
+          type="button"
+          class="room-code"
+          onclick={copyCode}
+          title="Tap to copy code"
+          aria-label="Room code {roomId}, tap to copy"
+        >
+          {roomId}
+          <span class="room-code-hint">{codeCopied ? 'Copied!' : 'tap to copy'}</span>
+        </button>
+
+        <div class="share-row">
+          <button class="share-btn wa" onclick={shareWhatsApp} aria-label="Share via WhatsApp">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M19.05 4.91A10 10 0 0 0 4.86 19.39L4 23l3.74-.85a10 10 0 0 0 14.97-8.63 9.94 9.94 0 0 0-3.66-8.61Zm-7.07 15.43h-.01a8.32 8.32 0 0 1-4.24-1.17l-.3-.18-2.22.51.54-2.16-.2-.32a8.36 8.36 0 1 1 6.43 3.32Zm4.6-6.27c-.25-.13-1.49-.74-1.72-.82-.23-.08-.4-.13-.57.13-.17.25-.65.82-.8.99-.15.17-.3.19-.55.06a6.84 6.84 0 0 1-3.4-2.97c-.26-.45.26-.42.74-1.39.08-.17.04-.32-.02-.45-.06-.13-.57-1.37-.78-1.88-.21-.5-.42-.43-.57-.44h-.49a.95.95 0 0 0-.69.32 2.92 2.92 0 0 0-.9 2.16c0 1.27.93 2.5 1.06 2.67.13.17 1.82 2.78 4.41 3.9.62.27 1.1.43 1.48.55.62.2 1.18.17 1.62.1.5-.07 1.49-.6 1.71-1.18.21-.59.21-1.09.15-1.19-.06-.1-.23-.16-.49-.29Z"
+              />
+            </svg>
+            <span>WhatsApp</span>
+          </button>
+
+          <button class="share-btn" onclick={copyLink} aria-label="Copy invite link">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 1 0-7-7l-1 1m1 9a5 5 0 0 0-7 0l-3 3a5 5 0 1 0 7 7l1-1"
+              />
+            </svg>
+            <span>{linkCopied ? 'Link copied' : 'Copy link'}</span>
+          </button>
+
+          {#if canNativeShare}
+            <button class="share-btn" onclick={nativeShare} aria-label="More share options">
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7M16 6l-4-4-4 4M12 2v14"
+                />
+              </svg>
+              <span>Share…</span>
+            </button>
+          {/if}
         </div>
+
+        <p class="hint">Or share this link:<br /><span class="link-line">{shareUrl}</span></p>
       {:else}
-        <h2>A user is joining the call... Connecting securely...</h2>
+        <h2>Connecting securely…</h2>
       {/if}
     </div>
   {/if}
@@ -608,6 +687,82 @@
     inline-size: 300px;
     max-inline-size: 100%;
     background: var(--bg-primary);
+  }
+
+  .room-code {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.9rem 1.4rem;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 14px;
+    color: white;
+    font-size: clamp(1.8rem, 7vw, 2.5rem);
+    font-weight: 700;
+    letter-spacing: 0.35em;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    user-select: all;
+    min-block-size: auto;
+  }
+
+  .room-code:hover { background: rgba(255, 255, 255, 0.12); }
+
+  .room-code-hint {
+    font-size: 0.75rem;
+    font-weight: 400;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+  }
+
+  .share-row {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-inline-size: 100%;
+  }
+
+  .share-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 1rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    font-size: 0.95rem;
+    min-block-size: 44px;
+    cursor: pointer;
+  }
+
+  .share-btn:hover { background: rgba(255, 255, 255, 0.16); }
+
+  .share-btn.wa {
+    background: #25D366;
+    border-color: #25D366;
+    color: white;
+  }
+
+  .share-btn.wa:hover { background: #1ebe5d; }
+
+  .hint {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    text-align: center;
+    max-inline-size: 90vw;
+  }
+
+  .link-line {
+    color: var(--text-primary);
+    word-break: break-all;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.8rem;
   }
 
   .card {
