@@ -30,7 +30,11 @@ const app = new Elysia()
     body: t.Object({
       type: t.String(),
       payload: t.Optional(t.Any()),
-      ecdhPublicKey: t.Optional(t.String())
+      ecdhPublicKey: t.Optional(t.String()),
+      // Peer advertises its support for the RTCRtpScriptTransform E2EE path.
+      // Only when BOTH peers send true does the client actually apply transforms.
+      // Older clients that omit it are treated as not supporting E2EE.
+      e2eeSupported: t.Optional(t.Boolean())
     }),
     open(ws) {
       if (!ws.data.id) {

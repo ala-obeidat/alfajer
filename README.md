@@ -77,6 +77,48 @@ The server-side install is driven by `infra/coturn/install.sh`, which expects
 in the environment. The same secret must be set in `apps/signaling/.env` so
 TURN authentication HMACs line up.
 
+### Signaling auto-deploy
+
+Pushes to `main` that touch `apps/signaling/**` trigger
+`.github/workflows/deploy-signaling.yml`, which rsyncs the source to
+`/root/alfajer/apps/signaling/` on the server, runs `bun install --production`,
+and restarts the `alfajer-signaling` systemd unit. Required repository secrets:
+
+| Secret | What goes in it |
+|---|---|
+| `DEPLOY_HOST` | `178.105.197.8` |
+| `DEPLOY_USER` | `root` |
+| `DEPLOY_SSH_KEY` | The contents of `C:\key2\alfajer` (the private key, PEM format) |
+| `DEPLOY_HOST_KEY` | The server's SSH host pubkey lines (`ssh-keyscan -t ed25519,rsa 178.105.197.8` output) |
+
+### Rotating the TURN secret (90-day cadence)
+
+From the project root on the Windows host, just run:
+
+```cmd
+update-secret.bat
+```
+
+The script generates a fresh 64-char hex secret with the OS RNG, pipes it
+over SSH to the server's `update-secret.sh`, which patches both
+`/etc/turnserver.conf` and `apps/signaling/.env` atomically, restarts coturn
+and alfajer-signaling, and backs up the previous values to
+`/root/alfajer-secret-backups/`. On success the local
+`deploy-secrets.local.txt` is also rewritten.
+
+If anything in the chain fails, the local file is left **untouched** so the
+state on PC and server doesn't drift apart.
+
+### E2EE notes
+
+Per-frame AES-GCM encryption via `RTCRtpScriptTransform` is enabled at runtime
+when both peers advertise support in their SDP offer/answer (the `e2eeSupported`
+flag). Peers that lack the API (older Safari, older Chrome Android) fall back
+transparently to plain WebRTC, which is still encrypted by DTLS-SRTP between
+peers — the signaling and TURN servers never see plaintext. Only video frames
+go through the extra transform; Opus audio packets are too small for the
+worker's current header-preservation scheme.
+
 ## Browser support
 
 - Tested on recent Chrome desktop and Chrome / Safari on mobile (Android & iOS).

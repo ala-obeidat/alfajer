@@ -10,23 +10,30 @@ export default defineConfig({
 			manifest: {
 				name: 'Alfajer',
 				short_name: 'Alfajer',
-				description: 'Privacy-first WebRTC calling PWA',
-				theme_color: '#000000',
+				description: 'Fully anonymous, private, secret 1-to-1 calls. No accounts. No logs.',
+				start_url: '/',
+				display: 'standalone',
+				orientation: 'portrait',
+				background_color: '#0f172a',
+				theme_color: '#0f172a',
+				categories: ['social', 'communication'],
 				icons: [
 					{
-						src: 'pwa-192x192.png',
-						sizes: '192x192',
-						type: 'image/png'
+						src: 'icon.svg',
+						sizes: 'any',
+						type: 'image/svg+xml',
+						purpose: 'any'
 					},
 					{
-						src: 'pwa-512x512.png',
-						sizes: '512x512',
-						type: 'image/png'
+						src: 'icon.svg',
+						sizes: 'any',
+						type: 'image/svg+xml',
+						purpose: 'maskable'
 					}
 				]
 			},
 			workbox: {
-				globPatterns: ['**/*.{js,css,html,ico,png,svg,json}']
+				globPatterns: ['**/*.{js,css,html,ico,png,svg,json,webmanifest}']
 			}
 		})
 	]

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Alfajer">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+  <!-- Safe-zone background (full bleed for maskable adaptive icons) -->
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <!-- Shield centered within the 80% safe zone (256 +/- 200 px) -->
+  <path
+    d="M256 88 L408 152 V268 C408 358 339 432 256 460 C173 432 104 358 104 268 V152 Z"
+    fill="url(#shield)"
+    opacity="0.97"
+  />
+  <!-- Check mark -->
+  <path
+    d="M180 264 L235 318 L340 213"
+    stroke="white"
+    stroke-width="34"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    fill="none"
+  />
+  <!-- Dot below check, echoing the home-page hero glyph -->
+  <circle cx="256" cy="380" r="14" fill="white" opacity="0.85"/>
+</svg>

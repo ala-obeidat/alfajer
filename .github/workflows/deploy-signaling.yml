@@ -1,0 +1,81 @@
+name: Deploy signaling
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/signaling/**'
+      - '.github/workflows/deploy-signaling.yml'
+  workflow_dispatch:
+
+# Cancel an in-flight deploy if a newer commit arrives.
+concurrency:
+  group: deploy-signaling
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Only the latest commit is needed — the workflow doesn't read git history.
+          fetch-depth: 1
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          # Pin the remote host key to prevent MITM. Falls back to scan if the
+          # secret isn't configured (acceptable for a first run; tighten later).
+          if [ -n "$SSH_HOST_KEY" ]; then
+            printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Rsync apps/signaling/ to server
+        env:
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          # --delete keeps the server in lockstep with the repo, EXCLUDING the
+          # .env file (which lives only on the server) and node_modules (the
+          # server reinstalls).
+          rsync -avz --delete \
+            --exclude '.env' \
+            --exclude 'node_modules/' \
+            --exclude 'bun.lock' \
+            -e "ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes" \
+            apps/signaling/ \
+            "${SSH_USER}@${SSH_HOST}:/root/alfajer/apps/signaling/"
+
+      - name: Reinstall deps and restart service
+        env:
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes "${SSH_USER}@${SSH_HOST}" <<'REMOTE'
+            set -euo pipefail
+            cd /root/alfajer/apps/signaling
+            /root/.bun/bin/bun install --production --no-frozen-lockfile
+            systemctl restart alfajer-signaling
+            sleep 2
+            systemctl is-active --quiet alfajer-signaling
+            curl -fsS http://localhost:3000/healthz | grep -q '"ok":true'
+            echo "✓ signaling redeploy successful"
+          REMOTE
+
+      - name: External healthcheck
+        run: |
+          curl -fsS --max-time 10 https://signaling.alaobeidat.com/healthz | grep -q '"ok":true'
+          echo "✓ public healthz responding"

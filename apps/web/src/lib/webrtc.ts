@@ -17,6 +17,20 @@ export class WebRTCManager {
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private wsQueue: any[] = [];
 
+  // E2EE capability negotiation
+  private myE2EESupport: boolean;
+  private peerE2EESupport = false;
+  private useE2EE = false;
+  private sharedKeyReady = false;
+  private appliedSenderTransform = false;
+  private transformedReceivers = new WeakSet<RTCRtpReceiver>();
+
+  /** True if the browser exposes the RTCRtpScriptTransform API we rely on. */
+  static isE2EESupported(): boolean {
+    return typeof globalThis !== 'undefined'
+      && typeof (globalThis as any).RTCRtpScriptTransform !== 'undefined';
+  }
+
   public onRemoteTrack?: (track: MediaStreamTrack, streams: readonly MediaStream[]) => void;
   public onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
   public onCallEnded?: (byRemote: boolean) => void;
@@ -61,14 +75,15 @@ export class WebRTCManager {
     this.pc = new RTCPeerConnection({ iceServers });
 
     this.worker = new Worker(new URL('./e2ee/transform.worker.ts', import.meta.url), { type: 'module' });
+    this.myE2EESupport = WebRTCManager.isE2EESupported();
 
     this.pc.ontrack = (event) => {
-      // E2EE script-transform path is disabled — RTCRtpScriptTransform support
-      // diverges across browsers (notably Safari iOS and older Chrome Android),
-      // and a partial deployment corrupts the receive stream. WebRTC's built-in
-      // DTLS-SRTP still encrypts media in transit. Re-enable once we have a
-      // negotiated capability check.
+      // Hand the track to the UI immediately so the video element binds.
       this.onRemoteTrack?.(event.track, event.streams);
+      // Apply the receive-side E2EE transform iff negotiation already agreed
+      // and the shared key is set in the worker. Otherwise the call to
+      // applyTransformsIfReady() in handleSignal() will re-attempt later.
+      this.applyTransformsIfReady();
     };
 
     this.pc.onconnectionstatechange = () => {
@@ -171,14 +186,15 @@ export class WebRTCManager {
     await this.initECDH();
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
-    
+
     const rawPubKey = await crypto.subtle.exportKey('raw', this.ecdhKeyPair!.publicKey);
     const pubKeyBase64 = btoa(String.fromCharCode(...new Uint8Array(rawPubKey)));
 
     this.sendSignal({
       type: 'offer',
       payload: offer,
-      ecdhPublicKey: pubKeyBase64
+      ecdhPublicKey: pubKeyBase64,
+      e2eeSupported: this.myE2EESupport
     });
   }
 
@@ -197,10 +213,13 @@ export class WebRTCManager {
       await this.makeOffer();
     } else if (msg.type === 'offer') {
       this.onPeerJoined?.(); // In case we are peer 2 and receiving offer
+      this.peerE2EESupport = msg.e2eeSupported === true;
+      this.useE2EE = this.myE2EESupport && this.peerE2EESupport;
+
       await this.initECDH();
       await this.pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
       await this.flushCandidates();
-      
+
       const answer = await this.pc.createAnswer();
       await this.pc.setLocalDescription(answer);
 
@@ -212,12 +231,20 @@ export class WebRTCManager {
       this.sendSignal({
         type: 'answer',
         payload: answer,
-        ecdhPublicKey: pubKeyBase64
+        ecdhPublicKey: pubKeyBase64,
+        e2eeSupported: this.myE2EESupport
       });
+
+      this.applyTransformsIfReady();
     } else if (msg.type === 'answer') {
+      this.peerE2EESupport = msg.e2eeSupported === true;
+      this.useE2EE = this.myE2EESupport && this.peerE2EESupport;
+
       await this.pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
       await this.deriveSharedSecret(msg.ecdhPublicKey);
       await this.flushCandidates();
+
+      this.applyTransformsIfReady();
     } else if (msg.type === 'candidate') {
       if (this.pc.remoteDescription) {
         await this.pc.addIceCandidate(new RTCIceCandidate(msg.payload));
@@ -270,6 +297,58 @@ export class WebRTCManager {
 
     // Send secret to worker
     this.worker.postMessage({ type: 'setKey', key: this.sharedSecret });
+    this.sharedKeyReady = true;
+  }
+
+  /**
+   * Applies the E2EE script transform to every relevant sender and receiver
+   * IFF both peers signaled support during the offer/answer exchange AND the
+   * AES-GCM shared key is in the worker. Called from several lifecycle points
+   * (after answer, after offer-response, and from ontrack); each call is
+   * idempotent thanks to the appliedSenderTransform flag and transformedReceivers
+   * WeakSet.
+   *
+   * Only VIDEO senders/receivers get the transform — the worker's fixed
+   * 10-byte header assumption is calibrated for VP8/VP9/H.264 packet
+   * structure and breaks Opus audio frames. Audio remains protected by
+   * WebRTC's built-in DTLS-SRTP, which is end-to-end between peers.
+   */
+  private applyTransformsIfReady() {
+    if (!this.useE2EE || !this.sharedKeyReady) return;
+    if (typeof (globalThis as any).RTCRtpScriptTransform === 'undefined') return;
+
+    // Sender side — apply once
+    if (!this.appliedSenderTransform) {
+      for (const sender of this.pc.getSenders()) {
+        if (sender.track?.kind !== 'video') continue;
+        try {
+          // @ts-expect-error — RTCRtpScriptTransform isn't in baseline lib.dom yet
+          sender.transform = new (globalThis as any).RTCRtpScriptTransform(
+            this.worker,
+            { side: 'sender' }
+          );
+        } catch (e) {
+          console.warn('[E2EE] sender.transform failed; continuing without E2EE on this sender', e);
+        }
+      }
+      this.appliedSenderTransform = true;
+    }
+
+    // Receiver side — apply per receiver, deduped via WeakSet
+    for (const receiver of this.pc.getReceivers()) {
+      if (receiver.track?.kind !== 'video') continue;
+      if (this.transformedReceivers.has(receiver)) continue;
+      try {
+        // @ts-expect-error — see note above
+        receiver.transform = new (globalThis as any).RTCRtpScriptTransform(
+          this.worker,
+          { side: 'receiver' }
+        );
+        this.transformedReceivers.add(receiver);
+      } catch (e) {
+        console.warn('[E2EE] receiver.transform failed; this stream stays unencrypted', e);
+      }
+    }
   }
 
   public toggleAudio(enabled: boolean) {
