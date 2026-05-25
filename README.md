@@ -111,13 +111,37 @@ state on PC and server doesn't drift apart.
 
 ### E2EE notes
 
-Per-frame AES-GCM encryption via `RTCRtpScriptTransform` is enabled at runtime
-when both peers advertise support in their SDP offer/answer (the `e2eeSupported`
-flag). Peers that lack the API (older Safari, older Chrome Android) fall back
-transparently to plain WebRTC, which is still encrypted by DTLS-SRTP between
-peers — the signaling and TURN servers never see plaintext. Only video frames
-go through the extra transform; Opus audio packets are too small for the
-worker's current header-preservation scheme.
+Per-frame AES-256-GCM encryption via `RTCRtpScriptTransform` is enabled at
+runtime when **both** peers advertise support in their SDP offer/answer (the
+`e2eeSupported` flag). Peers that lack the API (older Safari, older Chrome
+Android) fall back transparently to plain WebRTC, which is still encrypted by
+DTLS-SRTP between peers — the signaling and TURN servers never see plaintext.
+
+Key derivation chain when E2EE is engaged:
+
+```
+P-256 ECDH (public keys exchanged over signaling)
+        │
+        ▼ deriveBits → 256 raw bytes
+        │
+        ▼ HKDF-SHA-256 with two disjoint info labels
+        │
+        ├── senderKey   = HKDF(K, "alfajer-v1-<my-role>")     ← encrypt only
+        └── receiverKey = HKDF(K, "alfajer-v1-<peer-role>")   ← decrypt only
+                          where role ∈ {offerer, answerer}
+```
+
+`my-role` is `offerer` for the peer that called `createOffer` and `answerer`
+for the other. The two labels produce independent AES-GCM keys, so an IV
+collision across peers is structurally impossible to exploit — the
+ciphertexts live in different keyed spaces. Per-frame IV is
+`timestamp(4) ‖ ssrc(4) ‖ 0(4)`, unique per frame under each key.
+
+Only video frames go through the transform; Opus audio packets are too small
+for the worker's 10-byte header-preservation scheme and stay protected by
+DTLS-SRTP. The 32-bit timestamp wraps after ~13 hours of continuous video;
+realistic 1-to-1 calls never approach that, but a counter in the IV trailer
+is the documented next step if needed.
 
 ## Browser support
 
