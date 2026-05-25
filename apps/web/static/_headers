@@ -1,0 +1,22 @@
+# Cloudflare static-assets _headers: applied by the CF edge to every response.
+# Documented at https://developers.cloudflare.com/pages/configuration/headers/
+# (Workers Static Assets honors the same file in the build output.)
+
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(self), microphone=(self), display-capture=(self), geolocation=()
+  Cross-Origin-Opener-Policy: same-origin
+
+# Tighter cache for hashed immutable assets — they never change once built.
+/_app/immutable/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Service worker must NOT be cached aggressively or users get stuck on old SW.
+/sw.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/manifest.webmanifest
+  Cache-Control: public, max-age=3600
