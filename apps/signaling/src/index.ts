@@ -36,7 +36,18 @@ const app = new Elysia()
       // Peer advertises its support for the RTCRtpScriptTransform E2EE path.
       // Only when BOTH peers send true does the client actually apply transforms.
       // Older clients that omit it are treated as not supporting E2EE.
-      e2eeSupported: t.Optional(t.Boolean())
+      e2eeSupported: t.Optional(t.Boolean()),
+      // E2EE chat fields. Both peers derive the same AES-GCM "chat" key from
+      // the shared ECDH secret; this server only relays opaque ciphertext.
+      //   enc = true   → payload is base64(AES-GCM ciphertext), iv = base64 nonce
+      //   enc absent   → payload is plaintext (used only during the pre-key window)
+      enc: t.Optional(t.Boolean()),
+      iv:  t.Optional(t.String())
+    }, {
+      // Future-proofing: ignore unknown fields so a newer client can add
+      // experimental message fields without immediately breaking older
+      // signaling deployments.
+      additionalProperties: true
     }),
     open(ws) {
       if (!ws.data.id) {
