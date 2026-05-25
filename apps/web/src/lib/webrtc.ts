@@ -129,7 +129,11 @@ export class WebRTCManager {
     this.ecdhKeyPair = await crypto.subtle.generateKey(
       { name: 'ECDH', namedCurve: 'P-256' },
       true,
-      ['deriveKey']
+      // deriveBits is required because deriveSharedSecret() now feeds the
+      // raw ECDH output through HKDF (instead of going straight to AES-GCM
+      // via deriveKey). Without this usage the browser throws
+      //   InvalidAccessError: key.usages does not permit this operation.
+      ['deriveKey', 'deriveBits']
     );
   }
 

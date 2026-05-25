@@ -10,3 +10,4 @@ playwright-report/
 test-results/
 deploy-secrets.local.txt
 *.local.txt
+.claude/

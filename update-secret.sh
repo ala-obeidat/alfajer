@@ -7,7 +7,7 @@
 # rollback is possible.
 #
 # Usage (from your PC):
-#   echo "<new-hex>" | ssh -i C:\key2\alfajer root@178.105.197.8 \
+#   echo "<new-hex>" | ssh -i <ssh-key-path> root@<server-ip> \
 #       "bash /root/update-secret.sh"
 
 set -euo pipefail

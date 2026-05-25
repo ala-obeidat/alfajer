@@ -4,7 +4,7 @@
   import { WebRTCManager } from '$lib/webrtc';
   import { t } from 'svelte-i18n';
   import { goto } from '$app/navigation';
-  import { getOrGenerateIdentity, clearIdentity } from '$lib/identity';
+  import { getOrGenerateIdentity, getIdentity, clearIdentity } from '$lib/identity';
   
   let roomId = $page.params.roomId;
   let identity = $state('');
@@ -31,6 +31,12 @@
   let linkCopied = $state(false);
   
   let isInitiator = $page.url.searchParams.has('init');
+  // Auto-knock path: if the user came in with an identity already set
+  // (i.e. they went through the home page) we never show the redundant
+  // "Enter your name to join" dialog. hasJoined becomes true once the
+  // remote peer accepts.
+  let preSetIdentity = typeof sessionStorage !== 'undefined' ? getIdentity() : null;
+  let autoKnocking = !isInitiator && !!preSetIdentity;
   let hasJoined = $state(isInitiator);
 
   // Clean URL for sharing
@@ -63,12 +69,24 @@
   );
 
   onMount(async () => {
-    identity = getOrGenerateIdentity(); // Auto-generates gest-xxxx if not present
     if (isInitiator) {
+      identity = getOrGenerateIdentity();
       rtcManager = await WebRTCManager.create(roomId, identity);
       setupRtcCallbacks();
       await startMediaAndCall();
+    } else if (preSetIdentity) {
+      // Joiner who already entered a nickname on the home page —
+      // auto-knock instead of showing the redundant overlay.
+      identity = preSetIdentity;
+      knockName = identity;
+      knockStatus = 'requesting';
+      rtcManager = await WebRTCManager.create(roomId, identity);
+      setupRtcCallbacks();
+      rtcManager.requestJoin(identity);
     }
+    // else: pre-set identity is missing (someone opened a shared link
+    // directly without going through the home page). Fall through and
+    // render the knock overlay so they can type a name.
   });
   
   function setupRtcCallbacks() {
@@ -447,12 +465,13 @@
 <div class="call-container">
   {#if !hasJoined}
     <div class="overlay-status invite-overlay">
-      <h2>You have been invited to a call</h2>
-      {#if knockStatus === 'idle'}
+      {#if knockStatus === 'requesting'}
+        <h2>Joining call…</h2>
+        <p>Waiting for the host to accept</p>
+      {:else}
+        <h2>You have been invited to a call</h2>
         <input type="text" placeholder="Enter your name to join" bind:value={knockName} />
         <button onclick={sendJoinRequest} disabled={!knockName}>Ask to Join</button>
-      {:else if knockStatus === 'requesting'}
-        <p>Waiting for approval...</p>
       {/if}
     </div>
   {:else if !callConnected}

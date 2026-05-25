@@ -86,10 +86,10 @@ and restarts the `alfajer-signaling` systemd unit. Required repository secrets:
 
 | Secret | What goes in it |
 |---|---|
-| `DEPLOY_HOST` | `178.105.197.8` |
-| `DEPLOY_USER` | `root` |
-| `DEPLOY_SSH_KEY` | The contents of `C:\key2\alfajer` (the private key, PEM format) |
-| `DEPLOY_HOST_KEY` | The server's SSH host pubkey lines (`ssh-keyscan -t ed25519,rsa 178.105.197.8` output) |
+| `DEPLOY_HOST` | Your server's public IP or hostname |
+| `DEPLOY_USER` | `root` (or whatever account owns `/root/alfajer/`) |
+| `DEPLOY_SSH_KEY` | The contents of your SSH private key file (PEM format) |
+| `DEPLOY_HOST_KEY` | The server's SSH host pubkey lines (`ssh-keyscan -t ed25519,rsa <your-server-ip>` output) |
 
 ### Rotating the TURN secret (90-day cadence)
 

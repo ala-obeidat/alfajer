@@ -1,43 +1,66 @@
 @echo off
 REM Alfajer TURN secret rotator (Windows-side).
 REM
-REM What it does:
-REM   1. Generates a fresh 64-char hex secret via Windows' cryptographic
-REM      RNG (PowerShell System.Security.Cryptography).
-REM   2. SCPs update-secret.sh to the server.
-REM   3. Pipes the new secret to ssh stdin, which the server-side script
-REM      reads. The secret never appears in any command-line argument.
-REM   4. On server success, rewrites deploy-secrets.local.txt locally.
-REM   5. On any failure, the local file is left ALONE so you can rerun
-REM      with the secret still in sync.
+REM Configuration: read from deploy-secrets.local.txt (gitignored). Expected lines:
+REM   SERVER_IP=<your server ip>
+REM   SERVER_USER=root
+REM   SSH_KEY_PATH=C:\path\to\private\key
+REM   TURN_STATIC_AUTH_SECRET=<current secret, will be replaced>
 REM
-REM Run from the project root (this file's directory).
+REM What it does:
+REM   1. Generates a fresh 64-char hex secret via Windows' cryptographic RNG.
+REM   2. SCPs update-secret.sh to the server.
+REM   3. Pipes the new secret to ssh stdin so the server-side script reads it
+REM      — never appears in any process listing.
+REM   4. On server success, rewrites deploy-secrets.local.txt locally.
+REM   5. On any failure, the local file is left untouched.
 
 setlocal EnableDelayedExpansion
 
-set SERVER_IP=178.105.197.8
-set SERVER_USER=root
-set SSH_KEY=C:\key2\alfajer
 set SCRIPT_DIR=%~dp0
 set LOCAL_SECRETS=%SCRIPT_DIR%deploy-secrets.local.txt
 set TMP_SECRET=%TEMP%\alfajer-newsecret.tmp
 
-REM Sanity checks
+REM Parse the local secrets file into env vars.
+if not exist "%LOCAL_SECRETS%" (
+    echo ERROR: %LOCAL_SECRETS% not found.
+    echo Create it with at minimum:
+    echo   SERVER_IP=...
+    echo   SERVER_USER=root
+    echo   SSH_KEY_PATH=C:\path\to\private\key
+    echo   TURN_STATIC_AUTH_SECRET=...
+    exit /b 1
+)
+
+set SERVER_IP=
+set SERVER_USER=
+set SSH_KEY=
+for /f "usebackq tokens=1,* delims==" %%a in ("%LOCAL_SECRETS%") do (
+    if /i "%%a"=="SERVER_IP" set SERVER_IP=%%b
+    if /i "%%a"=="SERVER_USER" set SERVER_USER=%%b
+    if /i "%%a"=="SSH_KEY_PATH" set SSH_KEY=%%b
+)
+if "%SERVER_USER%"=="" set SERVER_USER=root
+
+if "%SERVER_IP%"=="" (
+    echo ERROR: SERVER_IP missing from %LOCAL_SECRETS%
+    exit /b 1
+)
+if "%SSH_KEY%"=="" (
+    echo ERROR: SSH_KEY_PATH missing from %LOCAL_SECRETS%
+    exit /b 1
+)
 if not exist "%SSH_KEY%" (
-    echo ERROR: SSH key not found at %SSH_KEY%
+    echo ERROR: SSH key file not found at %SSH_KEY%
     exit /b 1
 )
 if not exist "%SCRIPT_DIR%update-secret.sh" (
     echo ERROR: update-secret.sh not found next to update-secret.bat
     exit /b 1
 )
-if not exist "%LOCAL_SECRETS%" (
-    echo ERROR: %LOCAL_SECRETS% not found. Expected in project root.
-    exit /b 1
-)
 
 echo === Alfajer TURN secret rotation ===
-echo Server: %SERVER_USER%@%SERVER_IP%
+echo Target: %SERVER_USER%@%SERVER_IP%
 echo.
 
 echo [1/4] Generating new 64-char hex secret...
@@ -48,7 +71,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Read the secret into the variable
 set /p NEW_SECRET=<"%TMP_SECRET%"
 del "%TMP_SECRET%"
 if "%NEW_SECRET%"=="" (
@@ -56,7 +78,6 @@ if "%NEW_SECRET%"=="" (
     exit /b 1
 )
 
-REM Show first 6 and last 6 chars only, never the full value
 set MASKED_PREFIX=!NEW_SECRET:~0,6!
 set MASKED_SUFFIX=!NEW_SECRET:~-6!
 echo       new secret: !MASKED_PREFIX!...!MASKED_SUFFIX!
@@ -71,8 +92,6 @@ if errorlevel 1 (
 
 echo.
 echo [3/4] Applying new secret on server ^(restarts coturn + signaling^)...
-REM Pipe the secret to ssh stdin so it never appears on the command line.
-REM The server script reads it via `read NEW_SECRET`.
 echo !NEW_SECRET!| ssh -i "%SSH_KEY%" %SERVER_USER%@%SERVER_IP% "bash /root/update-secret.sh"
 if errorlevel 1 (
     echo.
@@ -91,11 +110,7 @@ if errorlevel 1 (
 
 echo.
 echo === SUCCESS ===
-echo The new secret is now live on:
-echo   - /etc/turnserver.conf                          ^(server^)
-echo   - /root/alfajer/apps/signaling/.env             ^(server^)
-echo   - deploy-secrets.local.txt                      ^(local^)
-echo.
+echo The new secret is now live on the server and in your local config.
 echo Previous values backed up at /root/alfajer-secret-backups/ on the server.
 echo Next rotation due in 90 days.
 exit /b 0
@@ -104,6 +119,6 @@ exit /b 0
 echo.
 echo Local deploy-secrets.local.txt was NOT modified.
 echo Verify server state with:
-echo   ssh -i %SSH_KEY% %SERVER_USER%@%SERVER_IP% "grep static-auth-secret /etc/turnserver.conf"
-echo   ssh -i %SSH_KEY% %SERVER_USER%@%SERVER_IP% "grep TURN_STATIC_AUTH_SECRET /root/alfajer/apps/signaling/.env"
+echo   ssh -i "%SSH_KEY%" %SERVER_USER%@%SERVER_IP% "grep static-auth-secret /etc/turnserver.conf"
+echo   ssh -i "%SSH_KEY%" %SERVER_USER%@%SERVER_IP% "grep TURN_STATIC_AUTH_SECRET /root/alfajer/apps/signaling/.env"
 exit /b 1

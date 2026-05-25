@@ -1,3 +1,9 @@
+/** Returns the stored identity if any. Never generates a new one. */
+export function getIdentity(): string | null {
+  if (typeof window === 'undefined') return null;
+  return sessionStorage.getItem('alfajer_identity');
+}
+
 export function getOrGenerateIdentity(nickname?: string): string {
   if (typeof window === 'undefined') return '';
 
