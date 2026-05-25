@@ -25,6 +25,11 @@ export class WebRTCManager {
   private appliedSenderTransform = false;
   private transformedReceivers = new WeakSet<RTCRtpReceiver>();
 
+  // SDP role determines which HKDF label produces our outbound AES-GCM key
+  // vs the peer's outbound key (which we use for inbound). The initiator
+  // who calls createOffer is 'offerer'; the peer that responds is 'answerer'.
+  private localSdpRole: 'offerer' | 'answerer' | null = null;
+
   /** True if the browser exposes the RTCRtpScriptTransform API we rely on. */
   static isE2EESupported(): boolean {
     return typeof globalThis !== 'undefined'
@@ -183,6 +188,7 @@ export class WebRTCManager {
   }
 
   private async makeOffer() {
+    this.localSdpRole = 'offerer';
     await this.initECDH();
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
@@ -213,6 +219,7 @@ export class WebRTCManager {
       await this.makeOffer();
     } else if (msg.type === 'offer') {
       this.onPeerJoined?.(); // In case we are peer 2 and receiving offer
+      this.localSdpRole = 'answerer';
       this.peerE2EESupport = msg.e2eeSupported === true;
       this.useE2EE = this.myE2EESupport && this.peerE2EESupport;
 
@@ -287,16 +294,59 @@ export class WebRTCManager {
       []
     );
 
-    this.sharedSecret = await crypto.subtle.deriveKey(
+    // Derive 32 raw bytes of shared secret from ECDH, then expand those bytes
+    // through HKDF into TWO independent AES-GCM keys — one per SDP direction.
+    // With disjoint keys per direction, an IV collision between peers becomes
+    // structurally harmless (different keys → different ciphertext spaces).
+    const sharedBits = await crypto.subtle.deriveBits(
       { name: 'ECDH', public: remotePubKey },
       this.ecdhKeyPair!.privateKey,
-      { name: 'AES-GCM', length: 256 },
-      true,
-      ['encrypt', 'decrypt']
+      256
     );
 
-    // Send secret to worker
-    this.worker.postMessage({ type: 'setKey', key: this.sharedSecret });
+    const hkdfBase = await crypto.subtle.importKey(
+      'raw',
+      sharedBits,
+      'HKDF',
+      false,
+      ['deriveKey']
+    );
+
+    const myRole = this.localSdpRole ?? 'offerer';
+    const peerRole: 'offerer' | 'answerer' = myRole === 'offerer' ? 'answerer' : 'offerer';
+
+    const encoder = new TextEncoder();
+    const senderKey = await crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: new Uint8Array(),
+        info: encoder.encode('alfajer-v1-' + myRole)
+      },
+      hkdfBase,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt']
+    );
+
+    const receiverKey = await crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: new Uint8Array(),
+        info: encoder.encode('alfajer-v1-' + peerRole)
+      },
+      hkdfBase,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['decrypt']
+    );
+
+    // Keep a handle to the sender key for any future use; the worker
+    // receives both via postMessage.
+    this.sharedSecret = senderKey;
+
+    this.worker.postMessage({ type: 'setKeys', senderKey, receiverKey });
     this.sharedKeyReady = true;
   }
 
