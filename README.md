@@ -56,7 +56,9 @@ exfiltrate data even if the operator wanted to.
 | Per-direction keys | Sender and receiver hold independent AES-GCM keys (`encrypt`-only / `decrypt`-only usages) — an IV collision between peers is structurally impossible to exploit |
 | IV structure | 12 bytes = `timestamp(4) ‖ ssrc(4) ‖ 0(4)` — unique per frame under each key |
 | Chat encryption | Separate AES-GCM key derived from the same ECDH secret; random 96-bit IV per message; the signaling server only ever sees opaque ciphertext + IV |
-| Key material exposure | All `CryptoKey`s created with `extractable: false`; non-extractable in the worker too |
+| Key material exposure | All `CryptoKey`s created with `extractable: false`; non-extractable in the worker too. The JS-visible view of the raw ECDH `deriveBits` output is `.fill(0)`'d after the HKDF base key is constructed. |
+| MITM detection (SAS) | After ECDH, each peer hashes both public keys in canonical order (offerer's first) and renders the first 4 bytes of SHA-256 as a 5-digit code. Both peers see the **same** code; a signaling-server MITM that swapped keys would produce divergent codes. Users compare verbally — a mismatch unambiguously reveals an active attack. ZRTP-style design. |
+| Security-state indicator | Visible UI badge during the call: 🔒 **E2EE** (script-transform engaged), 🔐 **DTLS-SRTP** (peer browser lacks the API, falling back to baseline WebRTC encryption), or ⏳ **Securing…** (handshake in progress). No silent downgrade. |
 
 ### Transport security headers
 

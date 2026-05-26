@@ -14,6 +14,22 @@ export type CallQuality =
   | { kind: 'failed'; rttMs: null; lossPct: null };
 
 /**
+ * State of the end-to-end security layer on top of DTLS-SRTP.
+ *
+ *   'connecting' — handshake not finished
+ *   'dtls-srtp'  — both peers connected, but the script-transform layer is
+ *                  NOT in use (peer browser lacks RTCRtpScriptTransform or
+ *                  the negotiation didn't agree). Media is still encrypted
+ *                  end-to-end via DTLS-SRTP, which the signaling and TURN
+ *                  servers cannot decrypt.
+ *   'e2ee'       — script-transform applied. Each video frame has an extra
+ *                  AES-256-GCM layer on top of DTLS-SRTP, with per-direction
+ *                  HKDF keys. A breach of the DTLS layer would still not
+ *                  expose video plaintext.
+ */
+export type SecurityState = 'connecting' | 'dtls-srtp' | 'e2ee';
+
+/**
  * Constructor options for WebRTCManager.create(): lets callers ask for an
  * audio-only call from the very first getUserMedia (no flash of camera light).
  */
@@ -51,6 +67,12 @@ export class WebRTCManager {
       && typeof (globalThis as any).RTCRtpScriptTransform !== 'undefined';
   }
 
+  private setSecurityState(s: SecurityState) {
+    if (this.securityState === s) return;
+    this.securityState = s;
+    this.onSecurityStateChange?.(s);
+  }
+
   public onRemoteTrack?: (track: MediaStreamTrack, streams: readonly MediaStream[]) => void;
   public onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
   public onCallEnded?: (byRemote: boolean) => void;
@@ -63,6 +85,17 @@ export class WebRTCManager {
   public onChat?: (text: string, fromIdentity?: string) => void;
   public onQualityChange?: (q: CallQuality) => void;
   public onIceRestart?: () => void;
+  /** Fires once both peers have exchanged public keys. Same 5-digit value
+   *  is produced on both sides; users compare aloud to detect a MITM. */
+  public onSafetyCode?: (code: string) => void;
+  /** Fires whenever the negotiated security state changes. */
+  public onSecurityStateChange?: (s: SecurityState) => void;
+
+  /** The latest computed 5-digit MITM-verification code, or null if the
+   *  ECDH handshake hasn't finished yet. */
+  public safetyCode: string | null = null;
+  /** Latest reported security state. */
+  public securityState: SecurityState = 'connecting';
 
   // Chat encryption — separate AES-GCM key derived from the same ECDH secret
   // via HKDF with a distinct label. Both peers derive an identical key so
@@ -349,6 +382,36 @@ export class WebRTCManager {
       []
     );
 
+    // SAS (Short Authentication String) — ZRTP-style MITM detection.
+    //
+    // Both peers hash the two ECDH public keys in canonical order
+    // (offerer's key first) and derive a 5-decimal-digit code from the
+    // first 4 bytes of SHA-256. Both peers compute the same value when no
+    // active MITM has swapped keys. A signaling-server attacker who
+    // substitutes one peer's pubkey would cause the two computed SAS values
+    // to diverge, which the users notice when they read the code aloud.
+    //
+    // 5 digits = 100,000 possibilities; the birthday-bound for an attacker
+    // who can attempt N key substitutions before being noticed is ~sqrt(N)
+    // collisions, so brute-forcing the SAS in real-time is infeasible.
+    try {
+      const myRawPub = new Uint8Array(
+        await crypto.subtle.exportKey('raw', this.ecdhKeyPair!.publicKey)
+      );
+      const peerRawPub = bytes;
+      const first  = this.localSdpRole === 'offerer' ? myRawPub  : peerRawPub;
+      const second = this.localSdpRole === 'offerer' ? peerRawPub : myRawPub;
+      const combined = new Uint8Array(first.length + second.length);
+      combined.set(first, 0);
+      combined.set(second, first.length);
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', combined));
+      const sasInt = new DataView(digest.buffer).getUint32(0, false) % 100000;
+      this.safetyCode = String(sasInt).padStart(5, '0');
+      this.onSafetyCode?.(this.safetyCode);
+    } catch (e) {
+      console.warn('[SAS] derivation failed (non-fatal)', e);
+    }
+
     // Derive 32 raw bytes of shared secret from ECDH, then expand those bytes
     // through HKDF into TWO independent AES-GCM keys — one per SDP direction.
     // With disjoint keys per direction, an IV collision between peers becomes
@@ -366,6 +429,13 @@ export class WebRTCManager {
       false,
       ['deriveKey']
     );
+
+    // Best-effort wipe of the JS-visible view of the raw ECDH output.
+    // The CryptoKey hkdfBase now holds the secret inside the browser's
+    // opaque crypto provider; the ArrayBuffer we just used is no longer
+    // needed and shouldn't sit around in heap longer than necessary.
+    // (V8 may have copied it internally — this is hygiene, not a guarantee.)
+    try { new Uint8Array(sharedBits).fill(0); } catch { /* sealed buffer */ }
 
     const myRole = this.localSdpRole ?? 'offerer';
     const peerRole: 'offerer' | 'answerer' = myRole === 'offerer' ? 'answerer' : 'offerer';
@@ -403,6 +473,11 @@ export class WebRTCManager {
 
     this.worker.postMessage({ type: 'setKeys', senderKey, receiverKey });
     this.sharedKeyReady = true;
+
+    // Baseline state after handshake: DTLS-SRTP only. If we'll be applying
+    // the script-transform layer on top, applyTransformsIfReady() will
+    // upgrade us to 'e2ee'. Either way the call is end-to-end encrypted.
+    this.setSecurityState('dtls-srtp');
 
     // Derive a third symmetric key dedicated to in-call chat. Both peers
     // produce the same bytes since the HKDF label is identical on both
@@ -621,6 +696,7 @@ export class WebRTCManager {
 
     // Sender side — apply once
     if (!this.appliedSenderTransform) {
+      let anyApplied = false;
       for (const sender of this.pc.getSenders()) {
         if (sender.track?.kind !== 'video') continue;
         try {
@@ -629,11 +705,13 @@ export class WebRTCManager {
             this.worker,
             { side: 'sender' }
           );
+          anyApplied = true;
         } catch (e) {
           console.warn('[E2EE] sender.transform failed; continuing without E2EE on this sender', e);
         }
       }
       this.appliedSenderTransform = true;
+      if (anyApplied) this.setSecurityState('e2ee');
     }
 
     // Receiver side — apply per receiver, deduped via WeakSet

@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { page } from '$app/stores';
-  import { WebRTCManager, type CallQuality } from '$lib/webrtc';
+  import { WebRTCManager, type CallQuality, type SecurityState } from '$lib/webrtc';
   import { goto } from '$app/navigation';
   import { getOrGenerateIdentity, getIdentity, clearIdentity } from '$lib/identity';
   import { prefs } from '$lib/prefs';
@@ -49,6 +49,11 @@
 
   // Connection-quality pill
   let quality = $state<CallQuality>({ kind: 'connecting', rttMs: null, lossPct: null });
+
+  // Security state + SAS verification code
+  let securityState = $state<SecurityState>('connecting');
+  let safetyCode = $state<string | null>(null);
+  let sasExpanded = $state(false);
 
   // Devices
   let videoInputs = $state<MediaDeviceInfo[]>([]);
@@ -230,6 +235,12 @@
 
     rtcManager.onQualityChange = (q) => { quality = q; };
     rtcManager.onIceRestart = () => { notify('Reconnecting…', 'warn'); };
+    rtcManager.onSecurityStateChange = (s) => {
+      const prev = securityState;
+      securityState = s;
+      if (prev !== 'e2ee' && s === 'e2ee') notify('End-to-end encryption engaged', 'success', 3500);
+    };
+    rtcManager.onSafetyCode = (code) => { safetyCode = code; };
   }
 
   function prettyId(id: string): string {
@@ -658,13 +669,67 @@
 </script>
 
 <div class="call-container">
-  <!-- Connection-quality pill in the top-left -->
+  <!-- Connection-quality + security pills in the top-left -->
   {#if callConnected}
-    <div class="quality-pill" title={qualityBadge(quality).tooltip} in:fade>
-      <span class="dot" style="background:{qualityBadge(quality).color}"></span>
-      <span>{qualityBadge(quality).label}</span>
-      {#if quality.rttMs != null}<span class="rtt">{quality.rttMs}ms</span>{/if}
+    <div class="top-pills" in:fade>
+      <div class="quality-pill" title={qualityBadge(quality).tooltip}>
+        <span class="dot" style="background:{qualityBadge(quality).color}"></span>
+        <span>{qualityBadge(quality).label}</span>
+        {#if quality.rttMs != null}<span class="rtt">{quality.rttMs}ms</span>{/if}
+      </div>
+
+      <!-- E2EE state + SAS verification code. Click to expand and read
+           the explanation aloud with your peer. -->
+      <button
+        type="button"
+        class="security-pill"
+        class:e2ee={securityState === 'e2ee'}
+        class:dtls={securityState === 'dtls-srtp'}
+        class:connecting={securityState === 'connecting'}
+        onclick={() => sasExpanded = !sasExpanded}
+        aria-expanded={sasExpanded}
+        aria-label="Security details"
+      >
+        <span aria-hidden="true">
+          {#if securityState === 'e2ee'}🔒{:else if securityState === 'dtls-srtp'}🔐{:else}⏳{/if}
+        </span>
+        <span>
+          {#if securityState === 'e2ee'}E2EE{:else if securityState === 'dtls-srtp'}DTLS-SRTP{:else}Securing…{/if}
+        </span>
+        {#if safetyCode}
+          <span class="sas-mini">{safetyCode}</span>
+        {/if}
+      </button>
     </div>
+
+    {#if sasExpanded}
+      <div class="sas-card" in:fly={{ y: -8, duration: 180 }} out:fade={{ duration: 120 }}>
+        <header>
+          <strong>Verify this call</strong>
+          <button class="ctrl" onclick={() => sasExpanded = false} aria-label="Close">×</button>
+        </header>
+        {#if safetyCode}
+          <div class="sas-digits" aria-label="Safety code">{safetyCode}</div>
+          <p class="sas-explain">
+            Both you and your peer should see the <strong>same 5 digits</strong>.
+            Read them aloud to each other to confirm no one has intercepted the call.
+            Different codes mean the connection is not safe — end the call.
+          </p>
+        {:else}
+          <p class="sas-explain">Computing safety code…</p>
+        {/if}
+        <div class="sas-state-line">
+          <span class="dot" style="background:{securityState === 'e2ee' ? '#10b981' : securityState === 'dtls-srtp' ? '#f59e0b' : '#94a3b8'}"></span>
+          {#if securityState === 'e2ee'}
+            <span>End-to-end encryption is active. Even the signaling server can't see your video.</span>
+          {:else if securityState === 'dtls-srtp'}
+            <span>This call uses DTLS-SRTP (peer-to-peer encryption). Your peer's browser doesn't support the extra E2EE layer, but no server in between can decrypt your media.</span>
+          {:else}
+            <span>Negotiating secure channel…</span>
+          {/if}
+        </div>
+      </div>
+    {/if}
   {/if}
 
   {#if needsPreprompt}
@@ -941,12 +1006,18 @@
     border: 0;
   }
 
-  /* Connection-quality pill */
-  .quality-pill {
+  /* Top-left pill stack */
+  .top-pills {
     position: absolute;
     inset-block-start: max(env(safe-area-inset-top, 0px), 0.6rem);
     inset-inline-start: max(env(safe-area-inset-left, 0px), 0.6rem);
     z-index: 45;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    max-inline-size: calc(100vw - 1.2rem);
+  }
+  .quality-pill, .security-pill {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
@@ -957,13 +1028,81 @@
     border-radius: 999px;
     color: white;
     font-size: 0.78rem;
+    cursor: pointer;
   }
+  .quality-pill { cursor: default; }
   .quality-pill .dot {
     inline-size: 7px; block-size: 7px; border-radius: 50%;
   }
   .quality-pill .rtt {
     opacity: 0.7;
     font-variant-numeric: tabular-nums;
+  }
+  .security-pill {
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .security-pill:hover { background: rgba(0, 0, 0, 0.75); }
+  .security-pill.e2ee  { border-color: rgba(16, 185, 129, 0.6); }
+  .security-pill.dtls  { border-color: rgba(245, 158, 11, 0.6); }
+  .security-pill.connecting { border-color: rgba(148, 163, 184, 0.5); }
+  .security-pill .sas-mini {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.12em;
+    opacity: 0.85;
+    padding-inline-start: 0.35rem;
+    border-inline-start: 1px solid rgba(255, 255, 255, 0.18);
+  }
+
+  .sas-card {
+    position: absolute;
+    inset-block-start: max(env(safe-area-inset-top, 0px), 3.2rem);
+    inset-inline-start: max(env(safe-area-inset-left, 0px), 0.6rem);
+    z-index: 46;
+    inline-size: min(360px, calc(100vw - 1.2rem));
+    background: rgba(15, 23, 42, 0.97);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 14px;
+    padding: 1rem 1rem 0.9rem;
+    color: white;
+    box-shadow: 0 12px 30px rgb(0 0 0 / 50%);
+  }
+  .sas-card header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-block-end: 0.6rem;
+  }
+  .sas-card header .ctrl {
+    inline-size: 28px; min-block-size: 28px;
+    padding: 0; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    color: white; border: none; cursor: pointer;
+    font-size: 1.05rem; line-height: 1;
+  }
+  .sas-digits {
+    font-size: clamp(2rem, 9vw, 2.6rem);
+    font-weight: 700;
+    letter-spacing: 0.35em;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    padding: 0.5rem 0;
+    color: white;
+    user-select: all;
+  }
+  .sas-explain {
+    font-size: 0.88rem;
+    color: rgba(255, 255, 255, 0.78);
+    margin: 0.25rem 0 0.7rem;
+    line-height: 1.45;
+  }
+  .sas-state-line {
+    display: flex; align-items: flex-start; gap: 0.5rem;
+    font-size: 0.82rem; color: rgba(255, 255, 255, 0.7);
+    padding-block-start: 0.6rem;
+    border-block-start: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .sas-state-line .dot {
+    inline-size: 8px; block-size: 8px; border-radius: 50%;
+    flex-shrink: 0; margin-block-start: 0.35rem;
   }
 
   .overlay-status {
