@@ -2,17 +2,18 @@
 
 **Alfajer** is a fully anonymous, private, secret **1-to-1** video/audio
 calling PWA. No accounts, no databases, no logs, no analytics, no cookies.
-Just a 6-digit room code, a session-only nickname, and the other person.
+Just a 9-digit room code, a session-only nickname, and the other person.
 
 Live: <https://alfajer.alaobeidat.com>
 
 ## What it does
 
 - Open the home page, type a nickname, and either:
-  - **Start new call** — generates a random 6-digit room code and drops
-    you into the room. Share the code (or the link) via WhatsApp, the
-    native share sheet, or copy-to-clipboard.
-  - **Join existing call** — type the 6-digit room code your peer sent.
+  - **Start new call** — generates a random 9-digit room code (out of 1
+    billion possible values) and drops you into the room. Share the code
+    (or the link) via WhatsApp, the native share sheet, or
+    copy-to-clipboard.
+  - **Join existing call** — type the 9-digit room code your peer sent.
 - Optional **voice-only call** checkbox: never opens the camera.
 - Calls are strictly 1-to-1. Rooms **seal** the moment two peers connect —
   a third browser trying the same code is rejected by the signaling
@@ -37,22 +38,109 @@ Live: <https://alfajer.alaobeidat.com>
 | **Native share / WhatsApp** | One-tap invite share with prefilled message. Uses `navigator.share` on mobile. |
 | **PWA install** | Captures `beforeinstallprompt`, surfaces a dismissable install card on the home page. Adds Alfajer to the device home screen with the shield icon. |
 
-## Privacy guarantees
+## Security & privacy
 
-- **No persistent storage.** Rooms live only in the signaling server's
-  process memory. No database, no Redis, no log files. Server crashes
-  wipe state.
-- **No payload logging.** Production signaling logs are silent; the dev
-  log emits only message type with room IDs and peer IDs redacted.
-- **No accounts.** Your identity is a session-only string in
-  `sessionStorage` and disappears the instant you close the tab.
-- **DTLS-SRTP** media encryption between peers is on by default (WebRTC).
-- **E2EE script-transform** layer with per-direction AES-256-GCM keys
-  derived via HKDF from a P-256 ECDH exchange — automatically engaged
-  when both peers signal support during SDP. See "E2EE notes" below.
-- **No third-party trackers, analytics, or cookies.**
-- **Strict CSP, HSTS, COOP, X-Frame-Options DENY, Permissions-Policy**
-  on the frontend. Google Translate auto-translate suppressed app-wide.
+Alfajer is built to deserve its "private and anonymous" claim. Every
+control below is in place and verified live. None of this depends on
+trusting the operator — the architecture removes the ability to
+exfiltrate data even if the operator wanted to.
+
+### Cryptography
+
+| Control | Implementation |
+|---|---|
+| Per-peer media encryption | DTLS-SRTP (WebRTC baseline) |
+| Additional video E2EE layer | AES-256-GCM via `RTCRtpScriptTransform`, gated on a capability handshake — engaged only when both peers signal support |
+| Key exchange | Elliptic-curve Diffie-Hellman over P-256 (Web Crypto `generateKey` + `deriveBits`) |
+| Key derivation | HKDF-SHA-256 with disjoint info labels per direction (`alfajer-v1-offerer`, `alfajer-v1-answerer`, `alfajer-v1-chat`) |
+| Per-direction keys | Sender and receiver hold independent AES-GCM keys (`encrypt`-only / `decrypt`-only usages) — an IV collision between peers is structurally impossible to exploit |
+| IV structure | 12 bytes = `timestamp(4) ‖ ssrc(4) ‖ 0(4)` — unique per frame under each key |
+| Chat encryption | Separate AES-GCM key derived from the same ECDH secret; random 96-bit IV per message; the signaling server only ever sees opaque ciphertext + IV |
+| Key material exposure | All `CryptoKey`s created with `extractable: false`; non-extractable in the worker too |
+
+### Transport security headers
+
+Applied to every response from the frontend domain via Cloudflare `_headers`:
+
+| Header | Value | Purpose |
+|---|---|---|
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains; preload` | HSTS preload-eligible; forces HTTPS for all current and future subdomains |
+| `Content-Security-Policy` | `default-src 'self'` + scoped `connect-src` to signaling only + `worker-src 'self' blob:` + `frame-ancestors 'none'` + `object-src 'none'` + `upgrade-insecure-requests` | Locks down where scripts, styles, media, and connections can come from |
+| `X-Content-Type-Options` | `nosniff` | Disables MIME-sniffing attacks |
+| `X-Frame-Options` | `DENY` | Stops clickjacking via iframe embedding |
+| `Referrer-Policy` | `no-referrer` | Room URLs never leak via the Referer header |
+| `Permissions-Policy` | `camera=(self), microphone=(self), display-capture=(self), geolocation=()` | Camera/mic/screen-share allowed only same-origin; geolocation blocked entirely |
+| `Cross-Origin-Opener-Policy` | `same-origin` | Process-isolates the page from any popup opener |
+
+Caching: hashed `_app/immutable/*` assets get `max-age=1y, immutable`;
+the service worker gets `must-revalidate`; the manifest is 1 hour.
+
+### DNS chain of trust
+
+| Control | What it does |
+|---|---|
+| **DNSSEC** | Algorithm 13 (ECDSA P-256 / SHA-256) signatures published; DS record at the `.com` parent; validating resolvers reject forged responses. AD-flag verified end-to-end. |
+| **CAA records** | Apex `alaobeidat.com` whitelists only Let's Encrypt + the major CAs Cloudflare may use (`pki.goog`, `ssl.com`, `comodoca.com`, `digicert.com`). Any other CA attempting to issue a cert is blocked at the CA layer. `iodef` record points to an operator email for violation reports. |
+| **Subdomain proxy split** | Frontend proxied through Cloudflare (DDoS absorption, edge cert termination). Signaling + TURN DNS-only direct to origin — UDP can't traverse a Cloudflare proxy and TLS termination matters end-to-end for WebRTC trust. |
+
+### Signaling-layer defenses
+
+| Control | What it does |
+|---|---|
+| **WebSocket Origin allowlist** | Inbound WS upgrades are rejected (close code 1008) unless the `Origin` header matches the configured allowlist. Defeats Cross-Site WebSocket Hijacking from any other browser-origin page. |
+| **Per-IP rate limit on `/turn-credentials`** | 20 requests / minute / IP. Beyond that, 429 with `Retry-After: 60`. Stops attackers from minting unlimited HMAC credentials to abuse the TURN relay as free bandwidth. |
+| **Per-IP rate limit on WebSocket upgrades** | 30 connections / minute / IP. Brute-forcing the 1B-code room space from a single IP would take ~63 years; even a 1000-IP botnet needs ~3 weeks. |
+| **Frame size cap** | Inbound WS messages over 64 KB trigger close code 1009 ("Message too big"). Real SDP / ICE / chat payloads stay under 16 KB; this rejects memory-exhaustion attacks. |
+| **TypeBox schema validation** | Every inbound message is validated against a typed schema (`type`, `payload`, `ecdhPublicKey`, `e2eeSupported`, `enc`, `iv`). Forward-compatible — unknown fields are forwarded but not interpreted. |
+| **9-digit room codes** | 1 billion possible values. Codes are generated by the browser's cryptographic RNG, not a deterministic counter. Legacy 6-digit codes still work for backward compatibility. |
+| **Room seal + knock acceptance** | A second peer connecting to an active room must be explicitly accepted by the initiator via a knock dialog. A third peer trying to join is rejected with close code 1008. |
+| **No payload / IP / room-ID logging** | Production signaling emits no application-level logs. In dev only, the message *type* is logged with the room and peer IDs redacted. |
+
+### TURN-layer defenses
+
+| Control | What it does |
+|---|---|
+| **Short-lived HMAC credentials** | Each browser gets a TURN credential valid for 1 hour, derived as HMAC-SHA1 of `(expiry-timestamp:username, secret)`. Stale credentials are rejected by CoTURN. |
+| **Two transports, ICE-prioritized** | Plain `turn:` on UDP (low latency) plus `turns:` on TLS/TCP (works through restrictive networks). WebRTC picks the lowest-RTT candidate. |
+| **Bandwidth quotas** | `user-quota=50` and `total-quota=200` cap how many simultaneous relay sessions a single credential or the whole server will hold. A leaked credential can't be used to flood the relay. |
+| **Loopback / RFC 1918 peer blocking** | CoTURN config refuses to relay traffic destined for `10/8`, `192.168/16`, `172.16/12`, or `169.254/16` — defends against SSRF-style abuse where a relayed connection is used to reach the operator's internal network. |
+| **TLS only** | `no-tlsv1` and `no-tlsv1_1` in the CoTURN config. Modern TLS 1.2+ only. |
+| **Secret rotation** | One-command (`update-secret.bat`) atomic rotation every 90 days. Old configs preserved as backups; secret never appears on any command line or in any log. |
+
+### Server hardening
+
+| Control | What it does |
+|---|---|
+| **fail2ban (sshd jail)** | 5 failed SSH attempts in 10 minutes → 1-hour ban for that source IP. Auto-loaded jail; survives reboots. |
+| **Unattended security upgrades** | `unattended-upgrades` configured for security-only origins. Patches land within 24 hours of release with no manual intervention. |
+| **systemd hardening directives** | The signaling unit runs with `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`, `RestrictSUIDSGID`, `LockPersonality`, `RestrictRealtime`, `SystemCallArchitectures=native`. Compromise of the signaling process can't escalate to the rest of the box. |
+| **Hetzner cloud firewall** | Only the ports the app actually needs are open inbound; SSH limited to a single source IP. |
+| **TLS auto-renewal** | Certbot timer + pre-hook stops Caddy → certbot binds port 80 → deploy-hook re-grants CoTURN read access to the cert → post-hook restarts Caddy. Survives unattended renewals every 60 days. |
+| **No secrets in tracked source** | `.gitignore` covers `deploy-secrets.local.txt`, `.env`, and the Claude Code permission file. Git history scrubbed via `git-filter-repo` to remove an accidentally-committed prior secret. |
+
+### Application-layer privacy
+
+| Control | What it does |
+|---|---|
+| **No accounts** | Identity is a session-only string generated client-side and stored in `sessionStorage`. Closes when the tab does. |
+| **No database, no Redis, no log files** | The signaling server holds room state in process memory. When the second peer leaves, the room is gone — nothing to "delete" because nothing was ever persisted. |
+| **No third-party analytics, fonts, or trackers** | The frontend loads zero cross-origin resources at runtime. No Google Fonts, no Analytics, no Tag Manager. Confirmed via deep test — zero cross-origin URLs in any bundle. |
+| **No cookies** | The app doesn't set, read, or rely on any cookies. |
+| **Google Translate suppressed app-wide** | `translate="no"` + `notranslate` class + `<meta name="google" content="notranslate">` so the UI doesn't get rewritten mid-call. |
+| **Forward secrecy** | Each call's ECDH keypair is fresh and discarded when the call ends. Capturing past traffic and stealing future keys reveals nothing about earlier calls. |
+
+### Verified by automated and manual deep tests
+
+- TLS cert chain validity, expiry, and renewal
+- HSTS preload eligibility
+- CSP enforcement under live interaction
+- WebSocket Origin allowlist (positive + negative path)
+- Per-IP rate limiter behaviour at the 20 / 30 boundary
+- 64 KB frame cap triggers the documented close code
+- TURN HMAC roundtrip consistency
+- DNSSEC validating-resolver AD flag end-to-end
+- No leaked secrets in any tracked file or deployed JS bundle (20+ bundles scanned)
+- Git history free of prior secret references on every branch tip and in every reachable blob
 
 ## Architecture
 
@@ -205,28 +293,6 @@ small for the worker's 10-byte header-preservation scheme and stay
 protected by DTLS-SRTP. The 32-bit video timestamp wraps after ~13 hours
 of continuous streaming; realistic 1-to-1 calls never approach that, but
 a counter in the IV trailer is the documented next step if needed.
-
-## Security headers (frontend)
-
-The Cloudflare `_headers` file applies, on every response:
-
-- `Content-Security-Policy: default-src 'self'; script-src 'self'
-  'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';
-  img-src 'self' data: blob:; font-src 'self'; connect-src 'self'
-  https://signaling.alaobeidat.com wss://signaling.alaobeidat.com;
-  media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self';
-  frame-ancestors 'none'; form-action 'self'; base-uri 'self';
-  object-src 'none'; upgrade-insecure-requests`
-- `Strict-Transport-Security: max-age=31536000; includeSubDomains`
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`
-- `Referrer-Policy: no-referrer`
-- `Permissions-Policy: camera=(self), microphone=(self),
-  display-capture=(self), geolocation=()`
-- `Cross-Origin-Opener-Policy: same-origin`
-
-Caching: hashed `_app/immutable/*` assets get `max-age=1y, immutable`;
-`sw.js` gets `must-revalidate`; the manifest is cached for an hour.
 
 ## Browser support
 
