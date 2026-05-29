@@ -721,9 +721,19 @@
         <div class="sas-state-line">
           <span class="dot" style="background:{securityState === 'e2ee' ? '#10b981' : securityState === 'dtls-srtp' ? '#f59e0b' : '#94a3b8'}"></span>
           {#if securityState === 'e2ee'}
-            <span>End-to-end encryption is active. Even the signaling server can't see your video.</span>
+            <span>
+              <strong>Video</strong> has an extra E2EE layer (AES-GCM with per-direction keys).
+              <strong>Audio</strong> is protected by WebRTC's built-in DTLS-SRTP.
+              No server in between can decrypt either.
+            </span>
           {:else if securityState === 'dtls-srtp'}
-            <span>This call uses DTLS-SRTP (peer-to-peer encryption). Your peer's browser doesn't support the extra E2EE layer, but no server in between can decrypt your media.</span>
+            <span>
+              Your peer's browser doesn't support the extended E2EE layer, so this call uses
+              <strong>WebRTC's built-in DTLS-SRTP</strong> for both audio and video.
+              No server in between can decrypt your media, but the extra-layer protection that defends
+              against a hypothetical future DTLS break is not active. Compare the code above to be sure
+              you're talking to the right person.
+            </span>
           {:else}
             <span>Negotiating secure channel…</span>
           {/if}

@@ -101,6 +101,9 @@ export class WebRTCManager {
   // via HKDF with a distinct label. Both peers derive an identical key so
   // either side can encrypt or decrypt. Random IV per message.
   private chatKey: CryptoKey | null = null;
+  // Outbound chat queue: messages composed before the chat key is derived
+  // wait here instead of being sent in cleartext. Flushed in deriveSharedSecret.
+  private chatOutboundQueue: string[] = [];
   // Aggregated stats for the connection-quality indicator.
   private statsInterval: number | null = null;
   private currentQuality: CallQuality = { kind: 'connecting', rttMs: null, lossPct: null };
@@ -495,18 +498,34 @@ export class WebRTCManager {
       false,
       ['encrypt', 'decrypt']
     );
+
+    // Flush any messages the user typed before the key was ready. They
+    // were held as plaintext in JS memory, never sent over the wire;
+    // now they go out encrypted in order.
+    await this.flushChatQueue();
   }
 
   /** Encrypts a UTF-8 chat string with the per-call chat key and sends it
-   *  through the signaling channel. Random 96-bit IV per message means the
-   *  signaling server never sees plaintext. */
+   *  through the signaling channel. Random 96-bit IV per message — the
+   *  signaling server never sees plaintext.
+   *
+   *  Privacy contract: this method NEVER sends plaintext. If the chat key
+   *  isn't derived yet (the brief window between WS open and ECDH
+   *  completion), the message is queued and emitted as ciphertext as soon
+   *  as the key is available. If the call never establishes ECDH (e.g.
+   *  peer disconnects mid-handshake) the queued messages are discarded
+   *  on cleanup rather than ever leaving as plaintext.
+   */
   public async sendChat(text: string): Promise<void> {
     if (!this.chatKey) {
-      // Pre-key fallback: send unencrypted so the message isn't lost during
-      // the very first frames of a call. The recipient will accept either.
-      this.sendSignal({ type: 'chat', payload: text });
+      this.chatOutboundQueue.push(text);
       return;
     }
+    await this.encryptAndSendChat(text);
+  }
+
+  private async encryptAndSendChat(text: string): Promise<void> {
+    if (!this.chatKey) return; // belt-and-braces — keep contract even on race
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ct = await crypto.subtle.encrypt(
       { name: 'AES-GCM', iv },
@@ -521,25 +540,43 @@ export class WebRTCManager {
     this.sendSignal({ type: 'chat', enc: true, iv: b64(iv), payload: b64(ct) });
   }
 
+  private async flushChatQueue(): Promise<void> {
+    if (!this.chatKey) return;
+    const queued = this.chatOutboundQueue.splice(0);
+    for (const text of queued) {
+      try { await this.encryptAndSendChat(text); }
+      catch (e) { console.warn('[chat] queued message failed to encrypt; dropped', e); }
+    }
+  }
+
   private async handleChatMessage(msg: any): Promise<void> {
+    // STRICT: accept only encrypted chat. A plaintext payload may be an
+    // injected message from an attacker who saw the protocol shape — we
+    // drop it silently rather than risk surfacing forgery as if it were
+    // a real peer message.
+    if (msg.enc !== true || typeof msg.iv !== 'string' || typeof msg.payload !== 'string') {
+      console.warn('[chat] dropping non-encrypted or malformed chat message');
+      return;
+    }
+    if (!this.chatKey) {
+      console.warn('[chat] received encrypted message before key derivation; dropping');
+      return;
+    }
     try {
-      if (msg.enc && this.chatKey && typeof msg.iv === 'string' && typeof msg.payload === 'string') {
-        const fromB64 = (s: string) => {
-          const bin = atob(s); const out = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-          return out;
-        };
-        const plain = await crypto.subtle.decrypt(
-          { name: 'AES-GCM', iv: fromB64(msg.iv) },
-          this.chatKey,
-          fromB64(msg.payload)
-        );
-        this.onChat?.(new TextDecoder().decode(plain));
-      } else if (typeof msg.payload === 'string') {
-        // Plaintext chat (used during the brief window before chatKey is set).
-        this.onChat?.(msg.payload);
-      }
+      const fromB64 = (s: string) => {
+        const bin = atob(s); const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+      };
+      const plain = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: fromB64(msg.iv) },
+        this.chatKey,
+        fromB64(msg.payload)
+      );
+      this.onChat?.(new TextDecoder().decode(plain));
     } catch (e) {
+      // Auth-tag failure: tampering, wrong key, or out-of-order message.
+      // Drop silently — the alternative is leaking integrity feedback.
       console.warn('[chat] decrypt failed', e);
     }
   }
@@ -759,6 +796,11 @@ export class WebRTCManager {
       this.screenStream.getTracks().forEach(t => t.stop());
       this.screenStream = null;
     }
+    // Discard any queued chat messages that never got a chat key —
+    // they were held in JS memory only, never transmitted. Wiping
+    // before letting GC reclaim shortens their lifetime.
+    this.chatOutboundQueue.forEach((_, i) => { this.chatOutboundQueue[i] = ''; });
+    this.chatOutboundQueue.length = 0;
     this.pc.close();
     this.ws.close();
     this.worker.terminate();

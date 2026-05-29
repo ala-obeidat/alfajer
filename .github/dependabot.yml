@@ -1,0 +1,63 @@
+version: 2
+updates:
+  # Web app and root workspace (Svelte, Vite, PWA tooling, lint stack).
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - security
+    groups:
+      svelte:
+        patterns:
+          - "svelte*"
+          - "@sveltejs/*"
+      vite:
+        patterns:
+          - "vite*"
+          - "@vite-pwa/*"
+      lint:
+        patterns:
+          - "eslint*"
+          - "@typescript-eslint/*"
+          - "stylelint*"
+          - "prettier*"
+      types:
+        patterns:
+          - "@types/*"
+
+  # Signaling server workspace (Elysia + TypeBox).
+  - package-ecosystem: npm
+    directory: "/apps/signaling"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - security
+
+  # Frontend workspace explicit entry so workspace-only deps are also tracked.
+  - package-ecosystem: npm
+    directory: "/apps/web"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - security
+
+  # CI action versions (rsync deploy, checkout, etc).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - ci

@@ -5,8 +5,24 @@ import { generateTurnCredentials } from './turn';
 import { RateLimiter, clientIp } from './rate-limit';
 
 const PORT = process.env.PORT || 3000;
+const NODE_ENV = process.env.NODE_ENV || 'development';
 const TURN_STATIC_AUTH_SECRET = process.env.TURN_STATIC_AUTH_SECRET || '';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
+
+// PRODUCTION FAIL-CLOSED: refuse to start if the operator forgot to
+// configure the WebSocket Origin allowlist or left it set to the
+// dev-only wildcard. This prevents accidentally deploying a node
+// that any web page on the public internet could connect to.
+if (NODE_ENV === 'production') {
+  const isWildcard = ALLOWED_ORIGIN.trim() === '*' || ALLOWED_ORIGIN.trim() === '';
+  if (isWildcard) {
+    console.error(
+      '[FATAL] ALLOWED_ORIGIN must be set to a concrete comma-separated origin list ' +
+      'in production. Refusing to start with a permissive default.'
+    );
+    process.exit(1);
+  }
+}
 
 // Per-IP rate limits. /turn-credentials is a HMAC mint; we cap it tightly so
 // an attacker can't generate unlimited credentials and use the TURN server
@@ -28,6 +44,7 @@ const ORIGIN_ALLOWLIST = new Set<string>(
 
 function isOriginAllowed(origin: string | undefined | null): boolean {
   if (!origin) return true;                       // native / curl / non-browser
+  if (NODE_ENV === 'production' && ORIGIN_ALLOWLIST.size === 0) return false; // fail closed
   if (ORIGIN_ALLOWLIST.size === 0) return true;   // dev mode — no allowlist configured
   return ORIGIN_ALLOWLIST.has(origin);
 }
@@ -37,9 +54,11 @@ function isOriginAllowed(origin: string | undefined | null): boolean {
 const app = new Elysia()
   // CORS: tight allowlist if configured, '*' only in dev.
   .use(cors({
+    // Production: only the explicit allowlist (validated non-empty by the
+    // fatal check above). Dev: wildcard for local tooling convenience.
     origin: ALLOWED_ORIGIN
       ? ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean)
-      : '*'
+      : (NODE_ENV === 'production' ? false : '*')
   }))
   .onError(({ code }) => {
     console.warn(`[WARN] Application error occurred. Code: ${code}`);
