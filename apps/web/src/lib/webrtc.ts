@@ -205,8 +205,20 @@ export class WebRTCManager {
     
     this.ws.onclose = (e) => {
       if (e.code === 1008) {
+        // 1008: 'Room full' (server-rejected join into a sealed room) OR
+        //       'Origin not allowed' (CSWSH guard rejected this origin).
         this.onRoomFull?.();
+        return;
       }
+      // 1000 = peer disconnected (server informs the survivor when the
+      // other side hangs up or closes their tab). Without this branch the
+      // survivor sat waiting for ICE timeout instead of seeing a clean
+      // 'Call ended' UI — caught by the round-3 functional audit (B7).
+      // 1006 = abnormal close (network drop on our side). The PC may still
+      // recover via ICE restart; but if it doesn't, surface the failure.
+      // Any other close code: treat as a remote end-of-call so the UI
+      // doesn't hang forever waiting for a re-handshake that's not coming.
+      this.onCallEnded?.(true);
     };
   }
 

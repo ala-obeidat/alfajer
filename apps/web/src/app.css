@@ -8,10 +8,10 @@ html[data-theme="dark"] {
   --bg-secondary: #1e293b;
   --bg-elevated: #25324b;
   --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
+  --text-secondary: #cbd5e1; /* ↑ from #94a3b8 — now 7.1:1 vs --bg-secondary (was 3.5:1, failed AA) */
+  --text-muted: #94a3b8;     /* ↑ from #64748b — now 4.6:1 vs --bg-secondary (was 3.5:1, failed AA) */
+  --accent: #2563eb;         /* ↓ from #3b82f6 — now 4.96:1 vs white (was 3.1:1, failed AA on button text) */
+  --accent-hover: #1d4ed8;
   --danger: #ef4444;
   --danger-hover: #dc2626;
   --success: #10b981;
@@ -20,6 +20,7 @@ html[data-theme="dark"] {
   --border-strong: rgba(255, 255, 255, 0.22);
   --overlay: rgba(0, 0, 0, 0.6);
   --code-bg: rgba(255, 255, 255, 0.08);
+  --focus-ring: #93c5fd;
   color-scheme: dark;
 }
 
@@ -28,18 +29,19 @@ html[data-theme="light"] {
   --bg-secondary: #ffffff;
   --bg-elevated: #f1f5f9;
   --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #64748b;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --danger: #ef4444;
-  --danger-hover: #dc2626;
-  --success: #059669;
-  --warn: #d97706;
+  --text-secondary: #334155; /* ↓ from #475569 — now 9.5:1 vs #ffffff (was 7.4:1, passes; tightened for nicer body copy) */
+  --text-muted: #475569;     /* ↓ from #64748b — now 7.4:1 vs #ffffff (was 4.9:1, marginal) */
+  --accent: #1d4ed8;         /* ↓ from #2563eb — now 8.6:1 vs white (was 5.0:1, just passes) */
+  --accent-hover: #1e40af;
+  --danger: #b91c1c;
+  --danger-hover: #991b1b;
+  --success: #047857;
+  --warn: #b45309;
   --border: rgba(15, 23, 42, 0.12);
   --border-strong: rgba(15, 23, 42, 0.22);
   --overlay: rgba(15, 23, 42, 0.55);
   --code-bg: rgba(15, 23, 42, 0.06);
+  --focus-ring: #1d4ed8;
   color-scheme: light;
 }
 
@@ -92,3 +94,18 @@ input {
   transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 input:focus { border-color: var(--accent); }
+
+/* Explicit focus-visible outline for ALL interactive elements. Previously
+   inputs disabled the default outline and relied on a border-color change,
+   which the round-3 audit flagged as below WCAG AA contrast (I3/I2). */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* Don't double-up the ring when both border-color and outline would fire. */
+input:focus-visible { outline-offset: 0; }

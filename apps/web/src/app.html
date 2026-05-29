@@ -13,7 +13,9 @@
 		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 		<meta name="apple-mobile-web-app-title" content="Alfajer" />
 		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="apple-touch-icon" href="/icon.svg" />
+		<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+		<link rel="apple-touch-icon" sizes="192x192" href="/pwa-192x192.png" />
+		<link rel="apple-touch-icon" sizes="512x512" href="/pwa-512x512.png" />
 		<link rel="manifest" href="/manifest.webmanifest" />
 
 		<!-- Open Graph / Twitter card for nicer link previews when sharing via
@@ -23,13 +25,18 @@
 		<meta property="og:title" content="Alfajer — anonymous 1-to-1 calls" />
 		<meta property="og:description" content="Private video calls. No accounts, no logs, end-to-end encrypted." />
 		<meta property="og:url" content="https://alfajer.alaobeidat.com" />
-		<meta property="og:image" content="https://alfajer.alaobeidat.com/og-card.svg" />
+		<!-- PNG is mandatory for WhatsApp / iMessage / Twitter / Discord / LinkedIn,
+		     all of which reject SVG og:image entries. The SVG version is kept
+		     listed below as a hint for crawlers that DO support it. -->
+		<meta property="og:image" content="https://alfajer.alaobeidat.com/og-card.png" />
+		<meta property="og:image:type" content="image/png" />
 		<meta property="og:image:width" content="1200" />
 		<meta property="og:image:height" content="630" />
+		<meta property="og:image:alt" content="Alfajer — fully anonymous 1-to-1 calls" />
 		<meta name="twitter:card" content="summary_large_image" />
 		<meta name="twitter:title" content="Alfajer — anonymous 1-to-1 calls" />
 		<meta name="twitter:description" content="Private video calls. No accounts, no logs, end-to-end encrypted." />
-		<meta name="twitter:image" content="https://alfajer.alaobeidat.com/og-card.svg" />
+		<meta name="twitter:image" content="https://alfajer.alaobeidat.com/og-card.png" />
 		<meta name="description" content="Fully anonymous, private, secret 1-to-1 calls. No accounts. No logs. End-to-end via WebRTC." />
 
 		%sveltekit.head%
