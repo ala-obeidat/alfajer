@@ -54,6 +54,13 @@
   let securityState = $state<SecurityState>('connecting');
   let safetyCode = $state<string | null>(null);
   let sasExpanded = $state(false);
+  // SAS user-verification state.
+  //   'pending'  — code shown, user has not confirmed it matches peer's
+  //   'verified' — user clicked "Codes match" after comparing aloud
+  //   'mismatch' — user clicked "Codes don't match" → trust is broken,
+  //                show prominent warning and offer to end the call.
+  // Reset whenever the underlying SAS code changes (re-handshake / new call).
+  let sasVerification = $state<'pending' | 'verified' | 'mismatch'>('pending');
 
   // Devices
   let videoInputs = $state<MediaDeviceInfo[]>([]);
@@ -240,7 +247,12 @@
       securityState = s;
       if (prev !== 'e2ee' && s === 'e2ee') notify('End-to-end encryption engaged', 'success', 3500);
     };
-    rtcManager.onSafetyCode = (code) => { safetyCode = code; };
+    rtcManager.onSafetyCode = (code) => {
+      // New code = fresh trust decision required. Any prior verified-state
+      // does NOT carry over (the keys are different, so the trust is too).
+      if (code !== safetyCode) sasVerification = 'pending';
+      safetyCode = code;
+    };
   }
 
   function prettyId(id: string): string {
@@ -686,15 +698,25 @@
         class:e2ee={securityState === 'e2ee'}
         class:dtls={securityState === 'dtls-srtp'}
         class:connecting={securityState === 'connecting'}
+        class:verified={sasVerification === 'verified'}
+        class:mismatch={sasVerification === 'mismatch'}
         onclick={() => sasExpanded = !sasExpanded}
         aria-expanded={sasExpanded}
         aria-label="Security details"
       >
         <span aria-hidden="true">
-          {#if securityState === 'e2ee'}🔒{:else if securityState === 'dtls-srtp'}🔐{:else}⏳{/if}
+          {#if sasVerification === 'mismatch'}⚠️
+          {:else if sasVerification === 'verified'}✅
+          {:else if securityState === 'e2ee'}🔒
+          {:else if securityState === 'dtls-srtp'}🔐
+          {:else}⏳{/if}
         </span>
         <span>
-          {#if securityState === 'e2ee'}E2EE{:else if securityState === 'dtls-srtp'}DTLS-SRTP{:else}Securing…{/if}
+          {#if sasVerification === 'mismatch'}Warning
+          {:else if sasVerification === 'verified'}Verified
+          {:else if securityState === 'e2ee'}Encrypted
+          {:else if securityState === 'dtls-srtp'}DTLS-SRTP
+          {:else}Securing…{/if}
         </span>
         {#if safetyCode}
           <span class="sas-mini">{safetyCode}</span>
@@ -709,12 +731,39 @@
           <button class="ctrl" onclick={() => sasExpanded = false} aria-label="Close">×</button>
         </header>
         {#if safetyCode}
-          <div class="sas-digits" aria-label="Safety code">{safetyCode}</div>
+          <div
+            class="sas-digits"
+            class:digits-verified={sasVerification === 'verified'}
+            class:digits-mismatch={sasVerification === 'mismatch'}
+            aria-label="Safety code"
+          >{safetyCode}</div>
           <p class="sas-explain">
             Both you and your peer should see the <strong>same 5 digits</strong>.
-            Read them aloud to each other to confirm no one has intercepted the call.
-            Different codes mean the connection is not safe — end the call.
+            Read them aloud to each other. If the digits match, no one is impersonating
+            your peer. If they don't match, the connection is not safe — end the call.
           </p>
+
+          {#if sasVerification === 'pending'}
+            <div class="sas-actions" in:fade>
+              <button class="primary" onclick={() => { sasVerification = 'verified'; notify('Connection verified', 'success', 2500); }}>
+                ✅ Codes match
+              </button>
+              <button class="danger" onclick={() => { sasVerification = 'mismatch'; notify('Connection NOT verified — consider ending the call', 'error', 6000); }}>
+                ⚠ Codes don't match
+              </button>
+            </div>
+          {:else if sasVerification === 'verified'}
+            <div class="sas-state-confirm verified">
+              <strong>✅ Verified.</strong> You've confirmed the safety code matches.
+              <button class="link" onclick={() => sasVerification = 'pending'}>undo</button>
+            </div>
+          {:else}
+            <div class="sas-state-confirm mismatch">
+              <strong>⚠ Code mismatch reported.</strong> A signaling-server attacker may
+              be intercepting this call. End it now and try again.
+              <button class="link" onclick={() => sasVerification = 'pending'}>I made a mistake</button>
+            </div>
+          {/if}
         {:else}
           <p class="sas-explain">Computing safety code…</p>
         {/if}
@@ -806,6 +855,11 @@
         </div>
 
         <p class="hint">Or share this link:<br /><span class="link-line">{shareUrl}</span></p>
+
+        <p class="bearer-warn">
+          ⚠ Anyone with this code can try to join. You must accept them on the next screen.
+          Share the code only with the person you want to call.
+        </p>
       {:else}
         <h2>Connecting securely…</h2>
       {/if}
@@ -1055,6 +1109,19 @@
   .security-pill.e2ee  { border-color: rgba(16, 185, 129, 0.6); }
   .security-pill.dtls  { border-color: rgba(245, 158, 11, 0.6); }
   .security-pill.connecting { border-color: rgba(148, 163, 184, 0.5); }
+  .security-pill.verified {
+    background: rgba(16, 185, 129, 0.18);
+    border-color: rgba(16, 185, 129, 0.9);
+  }
+  .security-pill.mismatch {
+    background: rgba(239, 68, 68, 0.22);
+    border-color: rgba(239, 68, 68, 0.95);
+    animation: pulse-warn 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse-warn {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45); }
+    50%      { box-shadow: 0 0 0 5px rgba(239, 68, 68, 0); }
+  }
   .security-pill .sas-mini {
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.12em;
@@ -1113,6 +1180,53 @@
   .sas-state-line .dot {
     inline-size: 8px; block-size: 8px; border-radius: 50%;
     flex-shrink: 0; margin-block-start: 0.35rem;
+  }
+
+  .sas-digits.digits-verified { color: #6ee7b7; }
+  .sas-digits.digits-mismatch { color: #fca5a5; }
+
+  .sas-actions {
+    display: flex; gap: 0.5rem; flex-wrap: wrap; margin-block: 0.5rem 0.8rem;
+  }
+  .sas-actions button {
+    flex: 1 1 auto; min-block-size: 42px;
+    padding-block: 0.55rem; padding-inline: 0.85rem;
+    border-radius: 10px; font-size: 0.92rem; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .sas-actions .primary {
+    background: var(--success, #10b981); color: white;
+  }
+  .sas-actions .primary:hover { filter: brightness(1.08); }
+  .sas-actions .danger {
+    background: rgba(239, 68, 68, 0.18); color: #fca5a5;
+    border-color: rgba(239, 68, 68, 0.45);
+  }
+  .sas-actions .danger:hover { background: rgba(239, 68, 68, 0.32); }
+
+  .sas-state-confirm {
+    padding: 0.65rem 0.85rem;
+    border-radius: 10px;
+    font-size: 0.88rem;
+    line-height: 1.45;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
+    margin-block: 0.5rem 0.7rem;
+  }
+  .sas-state-confirm.verified {
+    background: rgba(16, 185, 129, 0.14);
+    border: 1px solid rgba(16, 185, 129, 0.45);
+    color: #d1fae5;
+  }
+  .sas-state-confirm.mismatch {
+    background: rgba(239, 68, 68, 0.16);
+    border: 1px solid rgba(239, 68, 68, 0.55);
+    color: #fecaca;
+  }
+  .sas-state-confirm .link {
+    background: none; border: none; color: inherit;
+    text-decoration: underline; cursor: pointer;
+    font-size: 0.82rem; padding: 0; margin-inline-start: auto;
+    opacity: 0.85;
   }
 
   .overlay-status {
@@ -1184,6 +1298,18 @@
 
   .hint { margin: 0; color: var(--text-secondary); font-size: 0.85rem; text-align: center; max-inline-size: 90vw; }
   .link-line { color: var(--text-primary); word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+  .bearer-warn {
+    color: rgba(254, 202, 202, 0.85);
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    padding: 0.6rem 0.85rem;
+    border-radius: 10px;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    margin: 0.5rem 0 0;
+    max-inline-size: min(420px, 90vw);
+    text-align: start;
+  }
 
   .videos {
     position: relative; flex: 1; min-block-size: 0; overflow: hidden;

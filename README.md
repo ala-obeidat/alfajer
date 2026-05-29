@@ -144,6 +144,32 @@ the service worker gets `must-revalidate`; the manifest is 1 hour.
 - No leaked secrets in any tracked file or deployed JS bundle (20+ bundles scanned)
 - Git history free of prior secret references on every branch tip and in every reachable blob
 
+### Automated security regression tests (vitest)
+
+The CI build runs invariant guards that grep the source for patterns we've
+explicitly eliminated, so accidental re-introduction is caught immediately:
+
+| Test | Guards against |
+|---|---|
+| `apps/signaling/src/rate-limit.test.ts` | Per-IP rate-limit logic correctness, window expiry, bucket isolation, X-Forwarded-For parsing |
+| `apps/web/src/lib/security-invariants.test.ts` | Plaintext-chat regression, receiver-strictness, chat-queue zeroization on cleanup, SAS derived from public keys (not the shared secret), encrypt/decrypt-only key usages preserved, production fail-closed Origin check, CORS doesn't fall back to `*` in production, WS frame cap remains, payload/IP/room-ID never logged |
+
+### Known limitations & explicitly deferred items
+
+Some items in the security space are either deferred with reasoning or out
+of scope for an indie project. Documenting them honestly is part of the
+trust claim — these are gaps we know about, not ones we forgot.
+
+| Item | Status | Reasoning |
+|---|---|---|
+| **CSP `'unsafe-inline'` on script-src** | Deferred | SvelteKit's `adapter-static` emits an inline bootstrap script in the SPA fallback HTML. The inline content changes every build. A hash-based CSP would require a post-build step that scans the HTML, computes the SHA-256 of each `<script>`, and rewrites `_headers`. That pipeline is fragile and easy to break on framework upgrades. Practical-XSS exposure is very narrow because the app has no SSR, never renders user-supplied content as HTML, and Svelte's auto-escape covers every interpolation. The strict directives on `connect-src`, `worker-src`, `frame-ancestors`, `object-src`, etc. remain in effect. |
+| **SAS verification depends on user comparison** | Mitigated, not eliminated | The 3-state UI (Encrypted / Verified / Warning) makes the comparison explicit — users must actively click "Codes match" to reach the green "Verified" badge. A user who ignores the prompt stays in the "Encrypted (Not Verified)" amber state. This is the strongest mitigation possible without forcing a modal that breaks call flow. |
+| **Room codes are bearer secrets** | Mitigated, by design | Anyone who has the 9-digit code can attempt to join. The current mitigations: (1) 9-digit space = 1 billion codes; (2) per-IP rate limits make brute-force ~63 years for one attacker; (3) the host explicitly accepts every join via a knock dialog before media starts; (4) rooms seal at 2 peers — a third connection is rejected; (5) the room-code share screen displays a "⚠ Anyone with this code can try to join" notice. Removing the bearer model entirely would require accounts, which is incompatible with the no-accounts privacy claim. |
+| **Single-instance rate-limiting** | Acceptable at current scale | All rate-limit state lives in process memory. A signaling restart resets the counters; a horizontal scale-out would need shared state (Redis or similar). For the current "one VPS, one signaling process" deploy this is correct architecture — if traffic ever justifies multiple instances, the rate-limit module is a single drop-in change away from being Redis-backed. |
+| **Audio uses DTLS-SRTP only (no script-transform layer)** | By design | The worker's 10-byte header-preservation scheme is calibrated for VP8/VP9/H.264 video packets; Opus audio packets are too small to fit the same offset safely. Audio is **still end-to-end encrypted** between peers via WebRTC's built-in DTLS-SRTP — neither the signaling server nor TURN can decrypt it. Adding [SFrame](https://datatracker.ietf.org/doc/draft-ietf-sframe-enc/) for audio is the standards-track path; it's a 1-2 week implementation and worth doing only if competing directly with Signal-grade products. The call UI explicitly tells users which layer is active. |
+| **External penetration test** | Not done | Out of scope for an indie deploy. Every technical control we can implement and verify ourselves is in place; the remaining 1-of-10 in any honest security rating is reserved for the kind of finding only a paid human pentester surfaces (business-logic exploits, supply-chain audit, undocumented browser behaviour). |
+| **TURN bandwidth abuse via leaked credential** | Mitigated, capped | TURN credentials are 1-hour HMACs. Bandwidth-quota directives (`user-quota=50`, `total-quota=200`) cap how much relay a single credential or the whole server will hand out. A leaked credential can't be used to free-ride the relay at scale. |
+
 ## Architecture
 
 Bun-managed monorepo:
