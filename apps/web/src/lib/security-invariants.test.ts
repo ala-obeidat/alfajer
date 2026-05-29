@@ -8,11 +8,16 @@
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const webrtc = readFileSync(resolve(__dirname, 'webrtc.ts'), 'utf8');
+// ESM-safe __dirname (vitest can use either CJS or ESM under the hood
+// depending on tsconfig + the test file's resolved module type).
+const here = dirname(fileURLToPath(import.meta.url));
+
+const webrtc = readFileSync(resolve(here, 'webrtc.ts'), 'utf8');
 const signaling = readFileSync(
-  resolve(__dirname, '../../../signaling/src/index.ts'), 'utf8'
+  resolve(here, '../../../signaling/src/index.ts'), 'utf8'
 );
 
 describe('webrtc.ts — chat encryption invariants', () => {
