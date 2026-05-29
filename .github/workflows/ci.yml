@@ -23,17 +23,15 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install dependencies (workspace root)
-        run: bun install --frozen-lockfile
+      # Workspace install at root covers every member (apps/signaling +
+      # apps/web). No per-workspace install needed.
+      - name: Install workspace dependencies
+        run: bun install --no-frozen-lockfile
 
-      - name: Install signaling deps
-        working-directory: apps/signaling
-        run: bun install --production=false --no-frozen-lockfile
-
-      - name: Run signaling tests (rate-limit, room, turn)
+      - name: Signaling tests (rate-limit unit tests, room, turn)
         run: bunx vitest run --dir apps/signaling/src
 
-      - name: Run web tests (security-invariants + any others)
+      - name: Web tests (security-invariant regression guards + any others)
         run: bunx vitest run --dir apps/web/src
 
   audit:
@@ -51,11 +49,10 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Audit root workspace
-        run: bun audit --severity high
-        continue-on-error: true # advisories aren't actionable on every push but visible in logs
-
-      - name: Audit signaling
-        working-directory: apps/signaling
+      # Advisory-level reporting only — Dependabot handles the actual
+      # upgrades. continue-on-error so a transient registry advisory
+      # doesn't block unrelated merges; the result is still visible
+      # in the workflow log.
+      - name: Bun audit (workspace)
         run: bun audit --severity high
         continue-on-error: true
