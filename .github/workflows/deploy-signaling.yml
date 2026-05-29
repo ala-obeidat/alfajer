@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 8
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Only the latest commit is needed — the workflow doesn't read git history.
           fetch-depth: 1
