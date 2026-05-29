@@ -15,10 +15,11 @@ import { fileURLToPath } from 'node:url';
 // depending on tsconfig + the test file's resolved module type).
 const here = dirname(fileURLToPath(import.meta.url));
 
-const webrtc = readFileSync(resolve(here, 'webrtc.ts'), 'utf8');
-const signaling = readFileSync(
-  resolve(here, '../../../signaling/src/index.ts'), 'utf8'
+// Paths relative to apps/signaling/src/ where this test now lives.
+const webrtc = readFileSync(
+  resolve(here, '../../web/src/lib/webrtc.ts'), 'utf8'
 );
+const signaling = readFileSync(resolve(here, 'index.ts'), 'utf8');
 
 describe('webrtc.ts — chat encryption invariants', () => {
   it('regression-guard: sendChat never emits a plaintext signaling frame', () => {
