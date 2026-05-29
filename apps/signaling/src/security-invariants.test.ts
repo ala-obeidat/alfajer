@@ -65,7 +65,11 @@ describe('webrtc.ts — chat encryption invariants', () => {
     // the shared secret instead, the MITM detection silently dies.
     expect(webrtc).toMatch(/exportKey\(\s*['"`]raw['"`]/);
     expect(webrtc).toMatch(/digest\(\s*['"`]SHA-256['"`]/);
-    expect(webrtc).toMatch(/alfajer-v1-offerer|alfajer-v1-answerer/);
+    // The role-specific labels are constructed at runtime ('alfajer-v1-' +
+    // myRole). The literal that IS in source is the prefix plus the chat
+    // label suffix. Either confirms the HKDF labeling scheme is intact.
+    expect(webrtc).toMatch(/['"`]alfajer-v1-['"`]/);
+    expect(webrtc).toMatch(/['"`]alfajer-v1-chat['"`]/);
   });
 
   it('all CryptoKey usages are minimal (encrypt-only or decrypt-only) per direction', () => {
