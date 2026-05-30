@@ -1,0 +1,62 @@
+name: CodeQL
+
+# GitHub-native static application security testing (SAST).
+# Scans the TypeScript/JavaScript codebase for known vulnerability patterns
+# from GitHub's security research database. Results land in the repo's
+# "Security → Code scanning alerts" tab.
+#
+# Not a substitute for a paid human pentest, but gives a continuous,
+# zero-config third-party eye on every push and PR. Free for private
+# repos that aren't on GitHub Enterprise.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly re-scan even without new commits — catches advisories that
+    # were added to GitHub's database after our code was already merged.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript]
+        # Add 'actions' here if we ever want to scan our own workflow YAMLs.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # security-extended enables a larger ruleset than the default;
+          # includes patterns for things like hard-coded credentials,
+          # weak crypto, and dangerous regex.
+          queries: security-extended
+
+      - name: Build
+        # JavaScript/TypeScript needs no compile step for CodeQL — it
+        # analyses the source directly. autobuild is a no-op here.
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

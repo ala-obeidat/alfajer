@@ -45,6 +45,11 @@ control below is in place and verified live. None of this depends on
 trusting the operator — the architecture removes the ability to
 exfiltrate data even if the operator wanted to.
 
+A user-facing version of this section lives at
+[/privacy](https://alfajer.alaobeidat.com/privacy) on the deployed app,
+written in plain prose for end users. The table below is the operator
+view, cross-referenced to the code that implements each control.
+
 ### Cryptography
 
 | Control | Implementation |
@@ -144,6 +149,15 @@ the service worker gets `must-revalidate`; the manifest is 1 hour.
 - No leaked secrets in any tracked file or deployed JS bundle (20+ bundles scanned)
 - Git history free of prior secret references on every branch tip and in every reachable blob
 
+### Continuous third-party scrutiny
+
+| Layer | What it catches | Where |
+|---|---|---|
+| **Vitest CI** | The security-invariant regression guards listed below. Blocks every push and every PR if any guard fires. | `.github/workflows/ci.yml` |
+| **CodeQL SAST** | GitHub-native static analysis with the `security-extended` query set: hard-coded credentials, weak crypto, prototype pollution, dangerous regex, taint flow. Results in the repo's "Security → Code scanning alerts" tab. Runs on push, PR, and weekly cron. | `.github/workflows/codeql.yml` |
+| **bun audit** | High-severity dependency-CVE advisories on every push. Continues-on-error so a noisy advisory doesn't block unrelated merges; visible in the workflow log. | `.github/workflows/ci.yml` (audit job) |
+| **Dependabot** | Weekly PRs for npm + GitHub-actions ecosystems, grouped by family (svelte, vite, eslint, types) to avoid flood. | `.github/dependabot.yml` |
+
 ### Automated security regression tests (vitest)
 
 The CI build runs invariant guards that grep the source for patterns we've
@@ -151,8 +165,24 @@ explicitly eliminated, so accidental re-introduction is caught immediately:
 
 | Test | Guards against |
 |---|---|
-| `apps/signaling/src/rate-limit.test.ts` | Per-IP rate-limit logic correctness, window expiry, bucket isolation, X-Forwarded-For parsing |
-| `apps/web/src/lib/security-invariants.test.ts` | Plaintext-chat regression, receiver-strictness, chat-queue zeroization on cleanup, SAS derived from public keys (not the shared secret), encrypt/decrypt-only key usages preserved, production fail-closed Origin check, CORS doesn't fall back to `*` in production, WS frame cap remains, payload/IP/room-ID never logged |
+| `apps/signaling/src/rate-limit.test.ts` | Per-IP rate-limit logic correctness, window expiry, bucket isolation, X-Forwarded-For parsing, Headers-object compatibility |
+| `apps/signaling/src/security-invariants.test.ts` | Plaintext-chat regression, receiver-strictness, chat-queue zeroization on cleanup, SAS derived from public keys (not the shared secret), encrypt/decrypt-only key usages preserved, production fail-closed Origin check, CORS doesn't fall back to `*` in production, WS frame cap + 1009 close wired, payload/IP/room-ID never logged, additionalProperties:true on the typed body schema |
+
+### Things prior reviewers have gotten wrong (read this before flagging them again)
+
+Three claims have come up in past third-party reviews that are
+**factually incorrect**. They keep returning, so they're called out here:
+
+| Misconception | What's actually true |
+|---|---|
+| "The TURN server decrypts the DTLS layer / can read messages." | **No.** TURN is a layer-4 packet relay defined by RFC 8656. The DTLS handshake happens end-to-end between the two browsers, even when packets are routed through TURN. TURN holds zero key material and cannot decrypt. This isn't an Alfajer-specific design — it's how every WebRTC product works. |
+| "The signaling server logs SDP / ICE candidates / IPs / room IDs." | **No.** Production logs nothing application-level. Dev logs emit only the message TYPE with room and peer IDs redacted. Verified by `journalctl -u alfajer-signaling --no-pager`. The code is in `apps/signaling/src/index.ts` — search for `console.log` and confirm. |
+| "Uses outdated `ws`, `express`, and other packages." | **We use neither.** Signaling is built on **Bun + ElysiaJS**. The dependency list is in `apps/signaling/package.json`: `elysia`, `@elysiajs/cors`, `@sinclair/typebox`. Reviewers who flag `ws`/`express` are reviewing the wrong project or a hallucinated version. |
+| "No CSP / no X-Frame / no HSTS / HTTP not redirected." | **All present.** Verified live via `curl -sI https://alfajer.alaobeidat.com/`. See the headers table earlier in this document. The complete list is enforced by `apps/web/static/_headers`. |
+
+If a future reviewer claims any of the above, ask them to verify against
+the live deployment or the current source before responding. The cost
+of repeatedly re-litigating these is real.
 
 ### Known limitations & explicitly deferred items
 
@@ -168,6 +198,7 @@ trust claim — these are gaps we know about, not ones we forgot.
 | **Single-instance rate-limiting** | Acceptable at current scale | All rate-limit state lives in process memory. A signaling restart resets the counters; a horizontal scale-out would need shared state (Redis or similar). For the current "one VPS, one signaling process" deploy this is correct architecture — if traffic ever justifies multiple instances, the rate-limit module is a single drop-in change away from being Redis-backed. |
 | **Audio uses DTLS-SRTP only (no script-transform layer)** | By design | The worker's 10-byte header-preservation scheme is calibrated for VP8/VP9/H.264 video packets; Opus audio packets are too small to fit the same offset safely. Audio is **still end-to-end encrypted** between peers via WebRTC's built-in DTLS-SRTP — neither the signaling server nor TURN can decrypt it. Adding [SFrame](https://datatracker.ietf.org/doc/draft-ietf-sframe-enc/) for audio is the standards-track path; it's a 1-2 week implementation and worth doing only if competing directly with Signal-grade products. The call UI explicitly tells users which layer is active. |
 | **External penetration test** | Not done | Out of scope for an indie deploy. Every technical control we can implement and verify ourselves is in place; the remaining 1-of-10 in any honest security rating is reserved for the kind of finding only a paid human pentester surfaces (business-logic exploits, supply-chain audit, undocumented browser behaviour). |
+| **Web-app delivery is a trust point** | Inherent | Every visit downloads JS from our server. If the deployment pipeline, Cloudflare account, domain, or CDN edge were compromised, an attacker could in principle serve tampered code that bypasses the encryption model. This is true of every browser-delivered E2EE product (Signal Web, Proton Mail web, Bitwarden web). Mitigations in place: strict CSP, HSTS preload, CAA records pinning issuing CAs, DNSSEC, Cloudflare account 2FA, secret rotation tooling, automated dependency scanning, CodeQL SAST in CI. True elimination would require a native app pinned by an app-store review process — not in scope. **A user-facing version of this caveat is documented at [/privacy](https://alfajer.alaobeidat.com/privacy).** |
 | **TURN bandwidth abuse via leaked credential** | Mitigated, capped | TURN credentials are 1-hour HMACs. Bandwidth-quota directives (`user-quota=50`, `total-quota=200`) cap how much relay a single credential or the whole server will hand out. A leaked credential can't be used to free-ride the relay at scale. |
 
 ## Architecture

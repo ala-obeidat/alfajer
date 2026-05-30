@@ -767,6 +767,9 @@
         {:else}
           <p class="sas-explain">Computing safety code…</p>
         {/if}
+        <div class="sas-link-row">
+          <a href="/privacy" target="_blank" rel="noopener">Read the full privacy explanation →</a>
+        </div>
         <div class="sas-state-line">
           <span class="dot" style="background:{securityState === 'e2ee' ? '#10b981' : securityState === 'dtls-srtp' ? '#f59e0b' : '#94a3b8'}"></span>
           {#if securityState === 'e2ee'}
@@ -1228,6 +1231,16 @@
     font-size: 0.82rem; padding: 0; margin-inline-start: auto;
     opacity: 0.85;
   }
+  .sas-link-row {
+    font-size: 0.82rem;
+    margin-block: 0.6rem 0.4rem;
+  }
+  .sas-link-row a {
+    color: rgba(147, 197, 253, 0.9);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .sas-link-row a:hover { color: white; }
 
   .overlay-status {
     position: absolute; inset: 0; z-index: 30;

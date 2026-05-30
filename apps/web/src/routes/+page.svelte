@@ -211,6 +211,8 @@
 
   <footer class="foot">
     <span class="muted">Room state lives only in memory. When everyone leaves, it's gone.</span>
+    <br />
+    <a href="/privacy" class="muted">Privacy &amp; security details</a>
   </footer>
 </div>
 
@@ -386,6 +388,8 @@
     font-size: 0.85rem;
     max-inline-size: 32rem;
   }
+  .foot a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+  .foot a:hover { color: var(--text-primary); }
 
   @media (max-width: 480px) {
     .landing { gap: 1.25rem; padding-block: 1rem; }
