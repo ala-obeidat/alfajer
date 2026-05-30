@@ -36,16 +36,13 @@
       This is the same encryption used by Google Meet, WhatsApp calls, and every other modern WebRTC product.
     </li>
     <li>
-      <strong>Layer 2 — App-level video encryption (when both browsers support it).</strong> When both your browser and your peer's
-      browser support the modern <code>RTCRtpScriptTransform</code> API, we add AES-256-GCM encryption on each video frame before it
-      reaches WebRTC. The keys are derived from an Elliptic-Curve Diffie-Hellman exchange and run through HKDF-SHA-256 to produce
-      separate keys for each direction. Even if DTLS-SRTP were ever broken in the future, your video would still be protected by this
-      independent layer.
-    </li>
-    <li>
-      <strong>Audio uses Layer 1 only.</strong> Opus audio packets are too small to safely fit the extra header preservation scheme the
-      video layer uses, so audio relies on DTLS-SRTP alone. This is still end-to-end between peers — the servers cannot listen in —
-      but it doesn't have the second-layer protection that video does.
+      <strong>Layer 2 — App-level frame encryption (when both browsers support it).</strong> When both your browser and your peer's
+      browser support the modern <code>RTCRtpScriptTransform</code> API, we add AES-256-GCM encryption on each <strong>video and
+      audio</strong> frame before it reaches WebRTC. The keys are derived from an Elliptic-Curve Diffie-Hellman exchange and run
+      through HKDF-SHA-256 to produce <em>separate keys per direction and per media kind</em> — four independent keys total. Even
+      if DTLS-SRTP were ever broken in the future, your video and audio would still be protected by this independent layer.
+      Each kind preserves only what the packetizer needs unencrypted: 10 bytes for video payload descriptors, 1 byte for the
+      Opus TOC in audio. Everything after that is ciphertext.
     </li>
     <li>
       <strong>In-call chat uses its own dedicated key.</strong> Text messages are encrypted with a separate AES-GCM key derived from

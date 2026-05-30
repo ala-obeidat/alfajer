@@ -88,6 +88,11 @@ const app = new Elysia()
       payload: t.Optional(t.Any()),
       ecdhPublicKey: t.Optional(t.String()),
       e2eeSupported: t.Optional(t.Boolean()),
+      // Audio-layer script-transform support. False / absent on older
+      // clients; both peers must signal true for the audio AES-GCM layer
+      // to engage. When unsupported by either side, audio falls back to
+      // DTLS-SRTP only.
+      audioE2EESupported: t.Optional(t.Boolean()),
       enc: t.Optional(t.Boolean()),
       iv:  t.Optional(t.String())
     }, {

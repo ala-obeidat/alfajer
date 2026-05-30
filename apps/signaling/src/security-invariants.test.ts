@@ -65,26 +65,40 @@ describe('webrtc.ts — chat encryption invariants', () => {
     // the shared secret instead, the MITM detection silently dies.
     expect(webrtc).toMatch(/exportKey\(\s*['"`]raw['"`]/);
     expect(webrtc).toMatch(/digest\(\s*['"`]SHA-256['"`]/);
-    // The role-specific labels are constructed at runtime ('alfajer-v1-' +
-    // myRole). The literal that IS in source is the prefix plus the chat
-    // label suffix. Either confirms the HKDF labeling scheme is intact.
+    // HKDF labeling scheme is intact: video uses role-only labels,
+    // audio appends the '-audio' suffix, chat has its own label.
+    // All three literal-string fragments must be present in source.
     expect(webrtc).toMatch(/['"`]alfajer-v1-['"`]/);
     expect(webrtc).toMatch(/['"`]alfajer-v1-chat['"`]/);
+    // The audio suffix is constructed at runtime via `+ '-audio'` — the
+    // literal '-audio' is the canonical fragment we look for.
+    expect(webrtc).toMatch(/-audio/);
+  });
+
+  it('audio E2EE is independently negotiated (audioE2EESupported flag exists)', () => {
+    expect(webrtc).toMatch(/audioE2EESupported/);
+    expect(webrtc).toMatch(/useAudioE2EE/);
+    // Audio support must be ANDed with peer's flag, not OR'd or short-circuited.
+    expect(webrtc).toMatch(/myAudioE2EESupport\s*&&\s*this\.peerAudioE2EESupport/);
   });
 
   it('all CryptoKey usages are minimal (encrypt-only or decrypt-only) per direction', () => {
-    // senderKey gets ['encrypt'], receiverKey gets ['decrypt']. The chat
-    // key needs both because either peer can send. Just make sure we
-    // never expand sender / receiver to both, which would defeat the
-    // per-direction-key design.
-    const senderDerive = webrtc.match(
-      /senderKey\s*=\s*await\s+crypto\.subtle\.deriveKey\([\s\S]+?\[\s*['"`]encrypt['"`]\s*\]\s*\)/
-    );
-    const receiverDerive = webrtc.match(
-      /receiverKey\s*=\s*await\s+crypto\.subtle\.deriveKey\([\s\S]+?\[\s*['"`]decrypt['"`]\s*\]\s*\)/
-    );
-    expect(senderDerive, 'senderKey must be encrypt-only').toBeTruthy();
-    expect(receiverDerive, 'receiverKey must be decrypt-only').toBeTruthy();
+    // Video and audio sender keys must derive with 'encrypt' usage only.
+    // Video and audio receiver keys must derive with 'decrypt' usage only.
+    // The chat key needs both because either peer can send.
+    // We use a deriveAesKey helper, so the assertion is that BOTH usages
+    // never appear in the same single deriveAesKey() call for a sender or
+    // a receiver key.
+    const senderCalls = [...webrtc.matchAll(
+      /deriveAesKey\([^)]+,\s*['"`]encrypt['"`]\s*\)/g
+    )];
+    const receiverCalls = [...webrtc.matchAll(
+      /deriveAesKey\([^)]+,\s*['"`]decrypt['"`]\s*\)/g
+    )];
+    expect(senderCalls.length, 'expected ≥ 2 encrypt-only deriveAesKey calls (video + audio sender)')
+      .toBeGreaterThanOrEqual(2);
+    expect(receiverCalls.length, 'expected ≥ 2 decrypt-only deriveAesKey calls (video + audio receiver)')
+      .toBeGreaterThanOrEqual(2);
   });
 });
 

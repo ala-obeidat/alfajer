@@ -774,8 +774,8 @@
           <span class="dot" style="background:{securityState === 'e2ee' ? '#10b981' : securityState === 'dtls-srtp' ? '#f59e0b' : '#94a3b8'}"></span>
           {#if securityState === 'e2ee'}
             <span>
-              <strong>Video</strong> has an extra E2EE layer (AES-GCM with per-direction keys).
-              <strong>Audio</strong> is protected by WebRTC's built-in DTLS-SRTP.
+              <strong>Video and audio</strong> both have an extra AES-256-GCM layer with
+              per-direction, per-kind HKDF-derived keys on top of WebRTC's built-in DTLS-SRTP.
               No server in between can decrypt either.
             </span>
           {:else if securityState === 'dtls-srtp'}

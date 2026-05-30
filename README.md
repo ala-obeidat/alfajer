@@ -55,11 +55,12 @@ view, cross-referenced to the code that implements each control.
 | Control | Implementation |
 |---|---|
 | Per-peer media encryption | DTLS-SRTP (WebRTC baseline) |
-| Additional video E2EE layer | AES-256-GCM via `RTCRtpScriptTransform`, gated on a capability handshake — engaged only when both peers signal support |
+| Additional video + audio E2EE layer | AES-256-GCM via `RTCRtpScriptTransform` on every frame of both kinds. Negotiated via two capability flags (`e2eeSupported` for video, `audioE2EESupported` for audio); engaged independently per kind so a new client paired with an older video-only client still gets video E2EE while audio gracefully falls back to DTLS-SRTP. |
 | Key exchange | Elliptic-curve Diffie-Hellman over P-256 (Web Crypto `generateKey` + `deriveBits`) |
-| Key derivation | HKDF-SHA-256 with disjoint info labels per direction (`alfajer-v1-offerer`, `alfajer-v1-answerer`, `alfajer-v1-chat`) |
-| Per-direction keys | Sender and receiver hold independent AES-GCM keys (`encrypt`-only / `decrypt`-only usages) — an IV collision between peers is structurally impossible to exploit |
-| IV structure | 12 bytes = `timestamp(4) ‖ ssrc(4) ‖ 0(4)` — unique per frame under each key |
+| Key derivation | HKDF-SHA-256 with disjoint info labels — five keys per call: video sender/receiver (`alfajer-v1-<role>`), audio sender/receiver (`alfajer-v1-<role>-audio`), chat (`alfajer-v1-chat`) |
+| Per-direction × per-kind keys | Sender and receiver hold independent AES-GCM keys (`encrypt`-only / `decrypt`-only usages); video and audio use separate key chains, so an IV collision between peers OR between media kinds is structurally impossible to exploit |
+| IV structure | 12 bytes = `timestamp(4) ‖ ssrc(4) ‖ 0(4)` — unique per frame under each key. Audio and video have distinct SSRCs by WebRTC design; combined with distinct keys per kind, IV collision is structurally impossible. |
+| Codec-aware header preservation | Video frames preserve 10 bytes (VP8/VP9/H.264 payload descriptor); audio frames preserve 1 byte (Opus TOC). Everything after the preserved bytes is ciphertext. |
 | Chat encryption | Separate AES-GCM key derived from the same ECDH secret; random 96-bit IV per message; the signaling server only ever sees opaque ciphertext + IV. Messages composed before the chat key is derived are **queued in JS memory and never sent over the wire as plaintext**; the receive side strictly rejects any incoming non-encrypted chat frame. |
 | Key material exposure | All `CryptoKey`s created with `extractable: false`; non-extractable in the worker too. The JS-visible view of the raw ECDH `deriveBits` output is `.fill(0)`'d after the HKDF base key is constructed. |
 | MITM detection (SAS) | After ECDH, each peer hashes both public keys in canonical order (offerer's first) and renders the first 4 bytes of SHA-256 as a 5-digit code. Both peers see the **same** code; a signaling-server MITM that swapped keys would produce divergent codes. Users compare verbally — a mismatch unambiguously reveals an active attack. ZRTP-style design. |
@@ -196,7 +197,6 @@ trust claim — these are gaps we know about, not ones we forgot.
 | **SAS verification depends on user comparison** | Mitigated, not eliminated | The 3-state UI (Encrypted / Verified / Warning) makes the comparison explicit — users must actively click "Codes match" to reach the green "Verified" badge. A user who ignores the prompt stays in the "Encrypted (Not Verified)" amber state. This is the strongest mitigation possible without forcing a modal that breaks call flow. |
 | **Room codes are bearer secrets** | Mitigated, by design | Anyone who has the 9-digit code can attempt to join. The current mitigations: (1) 9-digit space = 1 billion codes; (2) per-IP rate limits make brute-force ~63 years for one attacker; (3) the host explicitly accepts every join via a knock dialog before media starts; (4) rooms seal at 2 peers — a third connection is rejected; (5) the room-code share screen displays a "⚠ Anyone with this code can try to join" notice. Removing the bearer model entirely would require accounts, which is incompatible with the no-accounts privacy claim. |
 | **Single-instance rate-limiting** | Acceptable at current scale | All rate-limit state lives in process memory. A signaling restart resets the counters; a horizontal scale-out would need shared state (Redis or similar). For the current "one VPS, one signaling process" deploy this is correct architecture — if traffic ever justifies multiple instances, the rate-limit module is a single drop-in change away from being Redis-backed. |
-| **Audio uses DTLS-SRTP only (no script-transform layer)** | By design | The worker's 10-byte header-preservation scheme is calibrated for VP8/VP9/H.264 video packets; Opus audio packets are too small to fit the same offset safely. Audio is **still end-to-end encrypted** between peers via WebRTC's built-in DTLS-SRTP — neither the signaling server nor TURN can decrypt it. Adding [SFrame](https://datatracker.ietf.org/doc/draft-ietf-sframe-enc/) for audio is the standards-track path; it's a 1-2 week implementation and worth doing only if competing directly with Signal-grade products. The call UI explicitly tells users which layer is active. |
 | **External penetration test** | Not done | Out of scope for an indie deploy. Every technical control we can implement and verify ourselves is in place; the remaining 1-of-10 in any honest security rating is reserved for the kind of finding only a paid human pentester surfaces (business-logic exploits, supply-chain audit, undocumented browser behaviour). |
 | **Web-app delivery is a trust point** | Inherent | Every visit downloads JS from our server. If the deployment pipeline, Cloudflare account, domain, or CDN edge were compromised, an attacker could in principle serve tampered code that bypasses the encryption model. This is true of every browser-delivered E2EE product (Signal Web, Proton Mail web, Bitwarden web). Mitigations in place: strict CSP, HSTS preload, CAA records pinning issuing CAs, DNSSEC, Cloudflare account 2FA, secret rotation tooling, automated dependency scanning, CodeQL SAST in CI. True elimination would require a native app pinned by an app-store review process — not in scope. **A user-facing version of this caveat is documented at [/privacy](https://alfajer.alaobeidat.com/privacy).** |
 | **TURN bandwidth abuse via leaked credential** | Mitigated, capped | TURN credentials are 1-hour HMACs. Bandwidth-quota directives (`user-quota=50`, `total-quota=200`) cap how much relay a single credential or the whole server will hand out. A leaked credential can't be used to free-ride the relay at scale. |
@@ -318,14 +318,22 @@ on PC and server doesn't drift apart.
 
 ## E2EE notes
 
-Per-frame AES-256-GCM video encryption via `RTCRtpScriptTransform` is
-enabled at runtime when **both** peers advertise support in their SDP
-offer/answer (`e2eeSupported` flag). Peers that lack the API (older
-Safari, older Chrome Android) fall back transparently to plain WebRTC,
-which is still encrypted by DTLS-SRTP between peers — the signaling
-and TURN servers never see plaintext.
+Per-frame AES-256-GCM encryption via `RTCRtpScriptTransform` covers **both
+video and audio** when supported. Engagement is negotiated independently
+per media kind, so the system degrades gracefully:
 
-Key derivation chain when E2EE is engaged:
+| Both peers support… | Video E2EE | Audio E2EE | Chat E2EE |
+|---|---|---|---|
+| `e2eeSupported` + `audioE2EESupported` | ✓ | ✓ | ✓ |
+| `e2eeSupported` only (e.g. older client paired with newer) | ✓ | DTLS-SRTP only | ✓ |
+| Neither | DTLS-SRTP only | DTLS-SRTP only | ✓ |
+
+Peers that lack `RTCRtpScriptTransform` (older Safari, older Chrome
+Android) fall back transparently to plain WebRTC, which is still
+encrypted by DTLS-SRTP between peers — the signaling and TURN servers
+never see plaintext.
+
+Key derivation chain when full E2EE is engaged:
 
 ```
 P-256 ECDH (public keys exchanged over signaling)
@@ -334,24 +342,31 @@ P-256 ECDH (public keys exchanged over signaling)
         │
         ▼ HKDF-SHA-256 with disjoint info labels
         │
-        ├── senderKey   = HKDF(K, "alfajer-v1-<my-role>")    ← encrypt only
-        ├── receiverKey = HKDF(K, "alfajer-v1-<peer-role>")  ← decrypt only
-        └── chatKey     = HKDF(K, "alfajer-v1-chat")         ← encrypt + decrypt
-                            where role ∈ {offerer, answerer}
+        ├── videoSenderKey   = HKDF(K, "alfajer-v1-<my-role>")          ← encrypt only
+        ├── videoReceiverKey = HKDF(K, "alfajer-v1-<peer-role>")        ← decrypt only
+        ├── audioSenderKey   = HKDF(K, "alfajer-v1-<my-role>-audio")    ← encrypt only
+        ├── audioReceiverKey = HKDF(K, "alfajer-v1-<peer-role>-audio")  ← decrypt only
+        └── chatKey          = HKDF(K, "alfajer-v1-chat")               ← encrypt + decrypt
+                                 where role ∈ {offerer, answerer}
 ```
 
 `my-role` is `offerer` for the peer that called `createOffer` and
-`answerer` for the other. The two video labels produce independent
-AES-GCM keys, so an IV collision across peers is structurally impossible
-to exploit — the ciphertexts live in different keyed spaces. Per-frame
-video IV is `timestamp(4) ‖ ssrc(4) ‖ 0(4)`, unique per frame under
-each key. Chat uses a random 96-bit IV per message.
+`answerer` for the other. Five independent AES-GCM keys per call. An
+IV collision across peers, across directions, or across media kinds is
+structurally impossible to exploit — the ciphertexts live in entirely
+disjoint keyed spaces.
 
-Only video frames go through the transform; Opus audio packets are too
-small for the worker's 10-byte header-preservation scheme and stay
-protected by DTLS-SRTP. The 32-bit video timestamp wraps after ~13 hours
-of continuous streaming; realistic 1-to-1 calls never approach that, but
-a counter in the IV trailer is the documented next step if needed.
+Per-frame video and audio IVs are both `timestamp(4) ‖ ssrc(4) ‖ 0(4)`,
+unique per frame under each key. Header preservation is kind-aware: video
+keeps 10 bytes (worst-case VP8/VP9/H.264 payload descriptor), audio keeps
+1 byte (the Opus TOC byte the decoder needs to parse the frame).
+Everything after the preserved bytes is ciphertext. Chat uses a random
+96-bit IV per message.
+
+The 32-bit RTP timestamp wraps after ~13 hours (video, 90 kHz clock) or
+~24 hours (audio, 48 kHz clock). Realistic 1-to-1 calls never approach
+either; a counter in the IV trailer is the documented next step if
+ultra-long-duration calls ever become a use case.
 
 ## Browser support
 

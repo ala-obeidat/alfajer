@@ -49,9 +49,18 @@ export class WebRTCManager {
   private wsQueue: any[] = [];
 
   // E2EE capability negotiation
+  // myE2EESupport / peerE2EESupport refer to the BASELINE script-transform
+  // path — covers video. The newer audio path is negotiated independently
+  // via myAudioE2EESupport / peerAudioE2EESupport so that older clients
+  // (current production, video-E2EE-only) can keep talking to newer
+  // clients without their audio dropping out: in mixed-version calls
+  // only video gets the extended layer; audio stays on DTLS-SRTP.
   private myE2EESupport: boolean;
   private peerE2EESupport = false;
   private useE2EE = false;
+  private myAudioE2EESupport: boolean;
+  private peerAudioE2EESupport = false;
+  private useAudioE2EE = false;
   private sharedKeyReady = false;
   private appliedSenderTransform = false;
   private transformedReceivers = new WeakSet<RTCRtpReceiver>();
@@ -157,6 +166,11 @@ export class WebRTCManager {
 
     this.worker = new Worker(new URL('./e2ee/transform.worker.ts', import.meta.url), { type: 'module' });
     this.myE2EESupport = WebRTCManager.isE2EESupported();
+    // Audio E2EE rides on the same RTCRtpScriptTransform API as video,
+    // but uses a 1-byte Opus-TOC-preserving header instead of the 10-byte
+    // video payload-descriptor preserve. Any browser that supports
+    // script-transform supports audio too.
+    this.myAudioE2EESupport = this.myE2EESupport;
 
     this.pc.ontrack = (event) => {
       // Hand the track to the UI immediately so the video element binds.
@@ -301,7 +315,8 @@ export class WebRTCManager {
       type: 'offer',
       payload: offer,
       ecdhPublicKey: pubKeyBase64,
-      e2eeSupported: this.myE2EESupport
+      e2eeSupported: this.myE2EESupport,
+      audioE2EESupported: this.myAudioE2EESupport
     });
   }
 
@@ -322,7 +337,9 @@ export class WebRTCManager {
       this.onPeerJoined?.(); // In case we are peer 2 and receiving offer
       this.localSdpRole = 'answerer';
       this.peerE2EESupport = msg.e2eeSupported === true;
+      this.peerAudioE2EESupport = msg.audioE2EESupported === true;
       this.useE2EE = this.myE2EESupport && this.peerE2EESupport;
+      this.useAudioE2EE = this.myAudioE2EESupport && this.peerAudioE2EESupport;
 
       await this.initECDH();
       await this.pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
@@ -340,13 +357,16 @@ export class WebRTCManager {
         type: 'answer',
         payload: answer,
         ecdhPublicKey: pubKeyBase64,
-        e2eeSupported: this.myE2EESupport
+        e2eeSupported: this.myE2EESupport,
+        audioE2EESupported: this.myAudioE2EESupport
       });
 
       this.applyTransformsIfReady();
     } else if (msg.type === 'answer') {
       this.peerE2EESupport = msg.e2eeSupported === true;
+      this.peerAudioE2EESupport = msg.audioE2EESupported === true;
       this.useE2EE = this.myE2EESupport && this.peerE2EESupport;
+      this.useAudioE2EE = this.myAudioE2EESupport && this.peerAudioE2EESupport;
 
       await this.pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
       await this.deriveSharedSecret(msg.ecdhPublicKey);
@@ -456,37 +476,46 @@ export class WebRTCManager {
     const peerRole: 'offerer' | 'answerer' = myRole === 'offerer' ? 'answerer' : 'offerer';
 
     const encoder = new TextEncoder();
-    const senderKey = await crypto.subtle.deriveKey(
+    const deriveAesKey = async (label: string, usage: KeyUsage) => crypto.subtle.deriveKey(
       {
         name: 'HKDF',
         hash: 'SHA-256',
         salt: new Uint8Array(),
-        info: encoder.encode('alfajer-v1-' + myRole)
+        info: encoder.encode(label)
       },
       hkdfBase,
       { name: 'AES-GCM', length: 256 },
       false,
-      ['encrypt']
+      [usage]
     );
 
-    const receiverKey = await crypto.subtle.deriveKey(
-      {
-        name: 'HKDF',
-        hash: 'SHA-256',
-        salt: new Uint8Array(),
-        info: encoder.encode('alfajer-v1-' + peerRole)
-      },
-      hkdfBase,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['decrypt']
-    );
+    // Video keys (existing label scheme — kept stable so a new client can
+    // still encrypt video for an older client that hasn't redeployed yet).
+    const videoSenderKey   = await deriveAesKey('alfajer-v1-' + myRole,   'encrypt');
+    const videoReceiverKey = await deriveAesKey('alfajer-v1-' + peerRole, 'decrypt');
+
+    // Audio keys (new label scheme — only used when both peers negotiated
+    // audioE2EESupported). Keeping them separate from the video keys
+    // means the (timestamp, ssrc) IV space can't collide between media
+    // kinds even in pathological cases.
+    const audioSenderKey   = await deriveAesKey('alfajer-v1-' + myRole   + '-audio', 'encrypt');
+    const audioReceiverKey = await deriveAesKey('alfajer-v1-' + peerRole + '-audio', 'decrypt');
 
     // Keep a handle to the sender key for any future use; the worker
-    // receives both via postMessage.
-    this.sharedSecret = senderKey;
+    // receives all four via postMessage.
+    this.sharedSecret = videoSenderKey;
 
-    this.worker.postMessage({ type: 'setKeys', senderKey, receiverKey });
+    this.worker.postMessage({
+      type: 'setKeys',
+      // Legacy names kept for backward compat with cached old workers.
+      senderKey: videoSenderKey,
+      receiverKey: videoReceiverKey,
+      // Explicit per-kind names for the new worker.
+      videoSenderKey,
+      videoReceiverKey,
+      audioSenderKey,
+      audioReceiverKey
+    });
     this.sharedKeyReady = true;
 
     // Baseline state after handshake: DTLS-SRTP only. If we'll be applying
@@ -743,20 +772,29 @@ export class WebRTCManager {
     if (!this.useE2EE || !this.sharedKeyReady) return;
     if (typeof (globalThis as any).RTCRtpScriptTransform === 'undefined') return;
 
-    // Sender side — apply once
+    const RST = (globalThis as any).RTCRtpScriptTransform;
+
+    // Should this kind of media get the script-transform layer applied?
+    // Video: gated on the original e2eeSupported handshake (useE2EE).
+    // Audio: gated on the newer audioE2EESupported handshake (useAudioE2EE).
+    //        Both peers signal both flags; when paired with an older
+    //        video-only client, audio falls back to DTLS-SRTP only.
+    const shouldApply = (kind: 'audio' | 'video'): boolean =>
+      kind === 'video' ? this.useE2EE : this.useAudioE2EE;
+
+    // Sender side — apply once across all senders
     if (!this.appliedSenderTransform) {
       let anyApplied = false;
       for (const sender of this.pc.getSenders()) {
-        if (sender.track?.kind !== 'video') continue;
+        const kind = sender.track?.kind as 'audio' | 'video' | undefined;
+        if (kind !== 'audio' && kind !== 'video') continue;
+        if (!shouldApply(kind)) continue;
         try {
           // @ts-expect-error — RTCRtpScriptTransform isn't in baseline lib.dom yet
-          sender.transform = new (globalThis as any).RTCRtpScriptTransform(
-            this.worker,
-            { side: 'sender' }
-          );
+          sender.transform = new RST(this.worker, { side: 'sender', kind });
           anyApplied = true;
         } catch (e) {
-          console.warn('[E2EE] sender.transform failed; continuing without E2EE on this sender', e);
+          console.warn(`[E2EE] sender.transform (${kind}) failed; continuing without E2EE on this sender`, e);
         }
       }
       this.appliedSenderTransform = true;
@@ -765,17 +803,16 @@ export class WebRTCManager {
 
     // Receiver side — apply per receiver, deduped via WeakSet
     for (const receiver of this.pc.getReceivers()) {
-      if (receiver.track?.kind !== 'video') continue;
       if (this.transformedReceivers.has(receiver)) continue;
+      const kind = receiver.track?.kind as 'audio' | 'video' | undefined;
+      if (kind !== 'audio' && kind !== 'video') continue;
+      if (!shouldApply(kind)) continue;
       try {
         // @ts-expect-error — see note above
-        receiver.transform = new (globalThis as any).RTCRtpScriptTransform(
-          this.worker,
-          { side: 'receiver' }
-        );
+        receiver.transform = new RST(this.worker, { side: 'receiver', kind });
         this.transformedReceivers.add(receiver);
       } catch (e) {
-        console.warn('[E2EE] receiver.transform failed; this stream stays unencrypted', e);
+        console.warn(`[E2EE] receiver.transform (${kind}) failed; this stream stays unencrypted`, e);
       }
     }
   }
