@@ -52,6 +52,8 @@
 
   // Security state + SAS verification code
   let securityState = $state<SecurityState>('connecting');
+  let useE2EE = $state(false);
+  let useAudioE2EE = $state(false);
   let safetyCode = $state<string | null>(null);
   let sasExpanded = $state(false);
   // SAS user-verification state.
@@ -245,6 +247,8 @@
     rtcManager.onSecurityStateChange = (s) => {
       const prev = securityState;
       securityState = s;
+      useE2EE = rtcManager.useE2EE;
+      useAudioE2EE = rtcManager.useAudioE2EE;
       if (prev !== 'e2ee' && s === 'e2ee') notify('End-to-end encryption engaged', 'success', 3500);
     };
     rtcManager.onSafetyCode = (code) => {
@@ -743,6 +747,37 @@
             your peer. If they don't match, the connection is not safe — end the call.
           </p>
 
+          <div class="security-breakdown">
+            <div class="breakdown-item">
+              <span class="label">Video:</span>
+              {#if useE2EE}
+                <span class="status secure">🔒 E2EE (AES-GCM)</span>
+              {:else if securityState === 'dtls-srtp'}
+                <span class="status fallback">🔐 DTLS-SRTP only</span>
+              {:else}
+                <span class="status connecting">⏳ Connecting…</span>
+              {/if}
+            </div>
+            <div class="breakdown-item">
+              <span class="label">Audio:</span>
+              {#if useAudioE2EE}
+                <span class="status secure">🔒 E2EE (AES-GCM)</span>
+              {:else if securityState === 'dtls-srtp'}
+                <span class="status fallback">🔐 DTLS-SRTP only</span>
+              {:else}
+                <span class="status connecting">⏳ Connecting…</span>
+              {/if}
+            </div>
+            <div class="breakdown-item">
+              <span class="label">Chat:</span>
+              {#if securityState !== 'connecting'}
+                <span class="status secure">🔒 E2EE (AES-GCM)</span>
+              {:else}
+                <span class="status connecting">⏳ Connecting…</span>
+              {/if}
+            </div>
+          </div>
+
           {#if sasVerification === 'pending'}
             <div class="sas-actions" in:fade>
               <button class="primary" onclick={() => { sasVerification = 'verified'; notify('Connection verified', 'success', 2500); }}>
@@ -773,11 +808,19 @@
         <div class="sas-state-line">
           <span class="dot" style="background:{securityState === 'e2ee' ? '#10b981' : securityState === 'dtls-srtp' ? '#f59e0b' : '#94a3b8'}"></span>
           {#if securityState === 'e2ee'}
-            <span>
-              <strong>Video and audio</strong> both have an extra AES-256-GCM layer with
-              per-direction, per-kind HKDF-derived keys on top of WebRTC's built-in DTLS-SRTP.
-              No server in between can decrypt either.
-            </span>
+            {#if useAudioE2EE}
+              <span>
+                <strong>Video and audio</strong> both have an extra AES-256-GCM layer with
+                per-direction, per-kind HKDF-derived keys on top of WebRTC's built-in DTLS-SRTP.
+                No server in between can decrypt either.
+              </span>
+            {:else}
+              <span>
+                <strong>Video</strong> has an extra AES-256-GCM layer, but <strong>audio</strong> fell back to
+                <strong>WebRTC's built-in DTLS-SRTP</strong> because the peer's browser or version doesn't support audio E2EE.
+                No server in between can decrypt either, but audio lacks the double-encryption layer.
+              </span>
+            {/if}
           {:else if securityState === 'dtls-srtp'}
             <span>
               Your peer's browser doesn't support the extended E2EE layer, so this call uses
@@ -1460,5 +1503,38 @@
     .controls { gap: 0.45rem; padding: 0.75rem; }
     .timer { font-size: 0.9rem; padding: 0.3rem 0.6rem; }
     .chat { inline-size: 100vw; inset-inline-start: 0; }
+  }
+
+  .security-breakdown {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 0.6rem 0.8rem;
+    margin-block: 0.6rem 0.8rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .breakdown-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.82rem;
+  }
+  .breakdown-item .label {
+    color: rgba(255, 255, 255, 0.6);
+    font-weight: 500;
+  }
+  .breakdown-item .status {
+    font-weight: 600;
+  }
+  .breakdown-item .status.secure {
+    color: #34d399; /* emerald-400 */
+  }
+  .breakdown-item .status.fallback {
+    color: #fbbf24; /* amber-400 */
+  }
+  .breakdown-item .status.connecting {
+    color: #94a3b8; /* slate-400 */
   }
 </style>

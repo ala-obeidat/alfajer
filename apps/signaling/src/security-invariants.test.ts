@@ -82,6 +82,17 @@ describe('webrtc.ts — chat encryption invariants', () => {
     expect(webrtc).toMatch(/myAudioE2EESupport\s*&&\s*this\.peerAudioE2EESupport/);
   });
 
+  it('ICE restart sends both e2eeSupported and audioE2EESupported to prevent silent downgrade', () => {
+    // tryIceRestart() must send BOTH flags in the offer payload so peer remembers audio E2EE capability
+    const tryIceRestartFn = webrtc.match(/public async tryIceRestart\(\)[\s\S]+?sendSignal\(\s*\{([\s\S]+?)\}\s*\)/);
+    expect(tryIceRestartFn, 'tryIceRestart must call sendSignal with an object').toBeTruthy();
+    if (tryIceRestartFn) {
+      const sendSignalPayload = tryIceRestartFn[1];
+      expect(sendSignalPayload).toMatch(/e2eeSupported/);
+      expect(sendSignalPayload).toMatch(/audioE2EESupported/);
+    }
+  });
+
   it('all CryptoKey usages are minimal (encrypt-only or decrypt-only) per direction', () => {
     // Video and audio sender keys must derive with 'encrypt' usage only.
     // Video and audio receiver keys must derive with 'decrypt' usage only.

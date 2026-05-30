@@ -57,10 +57,10 @@ export class WebRTCManager {
   // only video gets the extended layer; audio stays on DTLS-SRTP.
   private myE2EESupport: boolean;
   private peerE2EESupport = false;
-  private useE2EE = false;
+  public useE2EE = false;
   private myAudioE2EESupport: boolean;
   private peerAudioE2EESupport = false;
-  private useAudioE2EE = false;
+  public useAudioE2EE = false;
   private sharedKeyReady = false;
   private appliedSenderTransform = false;
   private transformedReceivers = new WeakSet<RTCRtpReceiver>();
@@ -708,7 +708,8 @@ export class WebRTCManager {
         type: 'offer',
         payload: offer,
         ecdhPublicKey: pub,
-        e2eeSupported: this.myE2EESupport
+        e2eeSupported: this.myE2EESupport,
+        audioE2EESupported: this.myAudioE2EESupport
       });
       return true;
     } catch (e) {
@@ -763,10 +764,10 @@ export class WebRTCManager {
    * idempotent thanks to the appliedSenderTransform flag and transformedReceivers
    * WeakSet.
    *
-   * Only VIDEO senders/receivers get the transform — the worker's fixed
-   * 10-byte header assumption is calibrated for VP8/VP9/H.264 packet
-   * structure and breaks Opus audio frames. Audio remains protected by
-   * WebRTC's built-in DTLS-SRTP, which is end-to-end between peers.
+   * Both video and audio streams can have the script transform layer applied.
+   * Video uses a 10-byte preserved payload-descriptor header, and audio uses
+   * a 1-byte preserved Opus TOC header. When paired with an older video-only
+   * client, audio falls back to DTLS-SRTP.
    */
   private applyTransformsIfReady() {
     if (!this.useE2EE || !this.sharedKeyReady) return;
