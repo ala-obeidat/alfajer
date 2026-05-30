@@ -264,6 +264,48 @@ is unset.
   - `PUBLIC_TURN_URL` — comma-separated TURN URLs, e.g.
     `turn:turn.alaobeidat.com:3478?transport=udp,turns:turn.alaobeidat.com:5349?transport=tcp`
 
+### Caddy configuration (server-side, not in this repo)
+
+The signaling box's `/etc/caddy/Caddyfile` must contain a site block for
+`signaling.alaobeidat.com` that reverse-proxies to `localhost:3000`.
+If you're hosting other sites on the same box, **append** new blocks —
+don't replace the file — or signaling stops serving TLS for our domain
+(Caddy refuses TLS handshakes for any host without a configured site).
+
+Minimum signaling block:
+
+```caddyfile
+signaling.alaobeidat.com {
+    encode zstd gzip
+    reverse_proxy localhost:3000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        transport http {
+            read_timeout 24h
+            write_timeout 24h
+        }
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+    log { output discard }
+}
+```
+
+The 24-hour transport timeout is intentional — without it Caddy would
+close idle WebSocket connections after 30 seconds, breaking any call
+that pauses for that long.
+
+The signaling-deploy CI runs an external healthcheck against
+`https://signaling.alaobeidat.com/healthz` after each redeploy and fails
+loudly if the Caddyfile is misconfigured.
+
 ### Signaling auto-deploy (GitHub Actions)
 
 Pushes to `main` that touch `apps/signaling/**` trigger
