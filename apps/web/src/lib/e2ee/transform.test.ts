@@ -157,6 +157,35 @@ describe('Audio + Video E2EE Worker Logic', () => {
     await expect(decryptFrame(encrypted, AUDIO_HEADER_SIZE, key2, iv))
       .rejects.toThrow();
   });
+
+  it('pathologically small/tiny frames do not trigger encryption/decryption and are preserved safely', async () => {
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt']
+    );
+
+    // If frame size is <= headerSize, it is pathologically small.
+    // Audio headerSize = 1. A 1-byte frame should be skipped and left unencrypted.
+    const tinyAudioFrame = new Uint8Array([0xAA]); // TOC byte only
+    const iv = buildIv(111, 222);
+
+    const audioLength = tinyAudioFrame.length;
+    let encAudio = tinyAudioFrame;
+    if (audioLength > AUDIO_HEADER_SIZE) {
+      encAudio = await encryptFrame(tinyAudioFrame, AUDIO_HEADER_SIZE, key, iv);
+    }
+    expect(encAudio).toEqual(tinyAudioFrame); // preserved unchanged!
+
+    // Video headerSize = 10. An 8-byte frame should be skipped and left unencrypted.
+    const tinyVideoFrame = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const videoLength = tinyVideoFrame.length;
+    let encVideo = tinyVideoFrame;
+    if (videoLength > VIDEO_HEADER_SIZE) {
+      encVideo = await encryptFrame(tinyVideoFrame, VIDEO_HEADER_SIZE, key, iv);
+    }
+    expect(encVideo).toEqual(tinyVideoFrame); // preserved unchanged!
+  });
 });
 
 describe('Symmetric Key Separation (HKDF)', () => {

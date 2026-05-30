@@ -62,7 +62,7 @@ export class WebRTCManager {
   private peerAudioE2EESupport = false;
   public useAudioE2EE = false;
   private sharedKeyReady = false;
-  private appliedSenderTransform = false;
+  private transformedSenders = new WeakSet<RTCRtpSender>();
   private transformedReceivers = new WeakSet<RTCRtpReceiver>();
 
   // SDP role determines which HKDF label produces our outbound AES-GCM key
@@ -761,8 +761,8 @@ export class WebRTCManager {
    * IFF both peers signaled support during the offer/answer exchange AND the
    * AES-GCM shared key is in the worker. Called from several lifecycle points
    * (after answer, after offer-response, and from ontrack); each call is
-   * idempotent thanks to the appliedSenderTransform flag and transformedReceivers
-   * WeakSet.
+   * idempotent thanks to the transformedSenders and transformedReceivers
+   * WeakSets.
    *
    * Both video and audio streams can have the script transform layer applied.
    * Video uses a 10-byte preserved payload-descriptor header, and audio uses
@@ -783,24 +783,26 @@ export class WebRTCManager {
     const shouldApply = (kind: 'audio' | 'video'): boolean =>
       kind === 'video' ? this.useE2EE : this.useAudioE2EE;
 
-    // Sender side — apply once across all senders
-    if (!this.appliedSenderTransform) {
-      let anyApplied = false;
-      for (const sender of this.pc.getSenders()) {
-        const kind = sender.track?.kind as 'audio' | 'video' | undefined;
-        if (kind !== 'audio' && kind !== 'video') continue;
-        if (!shouldApply(kind)) continue;
-        try {
-          // @ts-expect-error — RTCRtpScriptTransform isn't in baseline lib.dom yet
-          sender.transform = new RST(this.worker, { side: 'sender', kind });
-          anyApplied = true;
-        } catch (e) {
-          console.warn(`[E2EE] sender.transform (${kind}) failed; continuing without E2EE on this sender`, e);
-        }
+    // Sender side — apply per sender, deduped via WeakSet
+    let anyApplied = false;
+    for (const sender of this.pc.getSenders()) {
+      if (this.transformedSenders.has(sender)) {
+        anyApplied = true;
+        continue;
       }
-      this.appliedSenderTransform = true;
-      if (anyApplied) this.setSecurityState('e2ee');
+      const kind = sender.track?.kind as 'audio' | 'video' | undefined;
+      if (kind !== 'audio' && kind !== 'video') continue;
+      if (!shouldApply(kind)) continue;
+      try {
+        // @ts-expect-error — RTCRtpScriptTransform isn't in baseline lib.dom yet
+        sender.transform = new RST(this.worker, { side: 'sender', kind });
+        this.transformedSenders.add(sender);
+        anyApplied = true;
+      } catch (e) {
+        console.warn(`[E2EE] sender.transform (${kind}) failed; continuing without E2EE on this sender`, e);
+      }
     }
+    if (anyApplied) this.setSecurityState('e2ee');
 
     // Receiver side — apply per receiver, deduped via WeakSet
     for (const receiver of this.pc.getReceivers()) {
