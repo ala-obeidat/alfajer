@@ -16,6 +16,7 @@ test.setTimeout(45000);
 test.describe('Alfajer Deep Functional Test Pass', () => {
 
   test('Focus 2: Safari PWA install banner (spoofed UA) vs Chromium', async ({}, testInfo) => {
+    test.skip(testInfo.project.name !== 'chromium', 'Chromium-only — launches its own fake-media browser');
     // 1. iPhone Safari spoofing — the manual "Add to Home Screen" banner path.
     const safariBrowser = await chromium.launch();
     const safariContext = await safariBrowser.newContext({
@@ -65,6 +66,7 @@ test.describe('Alfajer Deep Functional Test Pass', () => {
   });
 
   test('Focus 1 + general sweep: two-peer WebRTC call', async ({}, testInfo) => {
+    test.skip(testInfo.project.name !== 'chromium', 'Chromium-only — launches its own fake-media browser');
     // One browser, two contexts = Host + Peer, with fake camera/mic.
     const browser = await chromium.launch({
       args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
@@ -163,6 +165,15 @@ test.describe('Alfajer Deep Functional Test Pass', () => {
     await hostPage.waitForSelector('.remote-video-wrapper video');
     await peerPage.waitForSelector('.remote-video-wrapper video');
     await hostPage.screenshot({ path: testInfo.outputPath('2_connected_call.png') });
+
+    // 4b. Happy-path E2EE: Chromium supports RTCRtpScriptTransform, so the
+    //     extra AES-GCM layer must ENGAGE on both peers (securityState ->
+    //     'e2ee'), not merely fall back to DTLS-SRTP. This is the positive
+    //     counterpart to the Firefox fallback test in deeper_functional_pass.
+    await expect(hostPage.locator('.security-pill.e2ee')).toBeVisible({ timeout: 10000 });
+    await expect(peerPage.locator('.security-pill.e2ee')).toBeVisible({ timeout: 10000 });
+    await expect(hostPage.locator('.security-pill')).toContainText('Encrypted');
+    console.log('[TEST] happy-path E2EE engaged on both peers ✓');
 
     // 5. Initial capture asserts AEC is on for both peers.
     const checkInitialAec = async (page: typeof hostPage, role: string) => {
