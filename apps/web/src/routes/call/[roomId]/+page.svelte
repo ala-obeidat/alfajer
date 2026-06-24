@@ -9,6 +9,18 @@
   import { toast } from '$lib/toast.svelte';
   import Icon from '$lib/Icon.svelte';
 
+  // Acoustic-echo-cancellation hints applied to EVERY microphone capture.
+  // A bare `audio: true` — and especially a deviceId-only constraint when
+  // switching mics — leaves echoCancellation up to the device default, which
+  // is how echo crept in once playback was routed to an external speaker
+  // (louder, longer acoustic path the mic picks back up). Asserting these on
+  // every getUserMedia keeps the far end from hearing themselves.
+  const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  };
+
   let roomId = $page.params.roomId;
   let identity = $state('');
   let remoteIdentity = $state('');
@@ -268,7 +280,7 @@
     if (!rtcManager) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        audio: AUDIO_CONSTRAINTS,
         video: !audioOnlyParam
       });
       if (localVideoRef && !audioOnlyParam) {
@@ -403,7 +415,7 @@
     if (!rtcManager || !deviceId || deviceId === currentMicId) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { deviceId: { exact: deviceId } }, video: false
+        audio: { deviceId: { exact: deviceId }, ...AUDIO_CONSTRAINTS }, video: false
       });
       const newTrack = stream.getAudioTracks()[0];
       await rtcManager.replaceAudioTrack(newTrack);

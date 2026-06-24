@@ -207,6 +207,19 @@
         <button class="ghost" onclick={() => install.dismiss()} aria-label="Dismiss install prompt">Dismiss</button>
       </div>
     </div>
+  {:else if install.manualInstall && !install.installed && !install.isDismissed()}
+    <!-- Safari/iOS never fires beforeinstallprompt, so there's no one-tap
+         button — guide the user through the Share-sheet flow instead. -->
+    <div class="install-banner ios" in:fly={{ y: 20, duration: 200 }}>
+      <span>
+        📲 Install Alfajer: tap
+        <Icon name="share" size={15} />
+        <strong>Share</strong>, then <strong>“Add to Home Screen”</strong>.
+      </span>
+      <div class="install-actions">
+        <button class="ghost" onclick={() => install.dismiss()} aria-label="Dismiss install instructions">Got it</button>
+      </div>
+    </div>
   {/if}
 
   <footer class="foot">
@@ -380,6 +393,9 @@
     font-size: 0.95rem;
   }
   .install-banner span { flex: 1; }
+  /* Keep the inline Share glyph baseline-aligned with the iOS hint text. */
+  .install-banner.ios span { display: inline; line-height: 1.5; }
+  .install-banner.ios :global(svg) { vertical-align: -2px; margin-inline: 0.1rem; }
   .install-actions { display: flex; gap: 0.5rem; }
   .install-actions button { padding: 0.5rem 0.9rem; min-block-size: 38px; font-size: 0.9rem; }
 
