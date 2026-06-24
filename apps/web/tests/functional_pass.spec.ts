@@ -224,16 +224,13 @@ test.describe('Alfajer Deep Functional Test Pass', () => {
     expect(counts.audios).toBe(0);
     expect(counts.remoteVideos).toBe(1);
 
-    // 8. Remote camera-off — REGRESSION GUARD for the audio-sink bug.
-    //    The placeholder must OVERLAY the remote <video> (the sole audio sink),
-    //    not replace it. Pre-fix, the <video> was unmounted here, silencing
-    //    remote audio (and it never returned because ontrack doesn't re-fire).
-    //    NB: fake-media Chromium keeps sending frames on a disabled track, so
-    //    the camera-off DETECTION (fps→0) is forced via mockRemoteVideoOff
-    //    below; this test proves the fps-0→overlay→audio-survives half, not the
-    //    real "disabled track → fps 0" link.
+    // 8. Remote camera-off — REAL detection (peer signals media_state) + the
+    //    audio-sink regression guard. Detection is now driven by the explicit
+    //    peer signal, not an inferred fps drop, so clicking "Camera off" alone
+    //    must surface the host's overlay (no mock needed). The placeholder must
+    //    OVERLAY the remote <video> (the sole audio sink), not replace it —
+    //    pre-fix the <video> was unmounted here, silencing remote audio.
     await peerPage.click('button[aria-label="Camera off"]');
-    await hostPage.evaluate(() => { (window as any).mockRemoteVideoOff = true; });
 
     await expect(hostPage.locator('.video-off-state')).toBeVisible({ timeout: 8000 });
     await hostPage.screenshot({ path: testInfo.outputPath('4_camera_off.png') });
@@ -254,10 +251,9 @@ test.describe('Alfajer Deep Functional Test Pass', () => {
     });
     expect(audioTrackLive).toBe(true);
 
-    // Camera back on → the same <video> still holds its srcObject (video resumes
-    // rather than going permanently black).
+    // Camera back on → peer signals again; overlay clears and the same <video>
+    // still holds its srcObject (video resumes rather than going black).
     await peerPage.click('button[aria-label="Camera on"]');
-    await hostPage.evaluate(() => { (window as any).mockRemoteVideoOff = false; });
     await expect(hostPage.locator('.video-off-state')).not.toBeVisible();
     const videoResumed = await hostPage.evaluate(() => {
       const v = document.querySelector('video.remote-video') as HTMLVideoElement | null;

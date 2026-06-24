@@ -103,8 +103,11 @@
   let speakingRafs: number[] = [];
 
   // Camera-off plaque for the remote side
-  let remoteVideoFps = $state<number | null>(null);
-  let remoteVideoOff = $derived(callConnected && remoteVideoFps !== null && remoteVideoFps === 0);
+  // Remote camera on/off comes from an explicit peer signal (media_state), not
+  // from inbound frame rate: a disabled video track keeps sending black frames
+  // at a nonzero rate, so the old fps===0 heuristic missed camera-off entirely.
+  let remoteVideoEnabled = $state(true);
+  let remoteVideoOff = $derived(callConnected && !remoteVideoEnabled);
 
   // Aspect-ratio CSS var
   function applyRemoteAspect(width: number, height: number) {
@@ -200,6 +203,9 @@
         connectionStartTime = performance.now();
         startTimer();
         rtcManager?.sendIdentity(identity);
+        // Tell the peer our initial camera state so their avatar overlay is
+        // correct from the first frame (audio-only / camera-off included).
+        rtcManager?.sendVideoState(!isCameraOff);
         rtcManager?.startQualityMonitor();
         if (peerJoined && remoteIdentity) notify(`${prettyId(remoteIdentity)} joined`, 'success');
         // Restore preferred speaker output if any
@@ -218,6 +224,10 @@
     rtcManager.onRemoteIdentity = (id) => {
       remoteIdentity = id;
       if (callConnected) notify(`${prettyId(id)} joined`, 'success');
+    };
+
+    rtcManager.onRemoteVideoState = (enabled) => {
+      remoteVideoEnabled = enabled;
     };
 
     rtcManager.onCallEnded = (byRemote) => {
@@ -294,8 +304,6 @@
       await refreshDevices();
       navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
       attachSpeakingMonitor(stream, true);
-      // Detect peer's camera-off via inbound-rtp.framesPerSecond
-      startRemoteFpsMonitor();
       await rtcManager.startCall();
     } catch (e) {
       console.error('Failed to get media devices', e);
@@ -479,28 +487,8 @@
     }
   }
 
-  // ---- Remote camera-off detection ----
-  let fpsPollHandle: number | null = null;
-  function startRemoteFpsMonitor() {
-    stopRemoteFpsMonitor();
-    fpsPollHandle = setInterval(async () => {
-      if (!rtcManager) return;
-      try {
-        const stats = await rtcManager.pc.getStats();
-        let videoFps: number | null = null;
-        stats.forEach(r => {
-          if (r.type === 'inbound-rtp' && (r as any).kind === 'video') {
-            const f = (r as any).framesPerSecond;
-            if (typeof f === 'number') videoFps = f;
-          }
-        });
-        remoteVideoFps = videoFps;
-      } catch {}
-    }, 2000) as unknown as number;
-  }
-  function stopRemoteFpsMonitor() {
-    if (fpsPollHandle !== null) { clearInterval(fpsPollHandle); fpsPollHandle = null; }
-  }
+  // Remote camera-off is driven by the peer's explicit media_state signal
+  // (see onRemoteVideoState / sendVideoState) — no fps polling needed.
 
   // ---- Aspect ratio detection ----
   function onRemoteLoaded() {
@@ -578,7 +566,6 @@
 
   onDestroy(() => {
     stopTimer();
-    stopRemoteFpsMonitor();
     speakingRafs.forEach(h => cancelAnimationFrame(h));
     // Detach MediaStreams from the <video> elements explicitly. Without this,
     // some Chromium versions keep the underlying RTCRtpReceiver alive in a
@@ -599,7 +586,12 @@
   function stopTimer() { if (timerRaf) cancelAnimationFrame(timerRaf); }
 
   function toggleMute() { isMuted = !isMuted; rtcManager?.toggleAudio(!isMuted); }
-  function toggleCamera() { isCameraOff = !isCameraOff; rtcManager?.toggleVideo(!isCameraOff); }
+  function toggleCamera() {
+    isCameraOff = !isCameraOff;
+    rtcManager?.toggleVideo(!isCameraOff);
+    // Let the peer update their avatar overlay immediately.
+    rtcManager?.sendVideoState(!isCameraOff);
+  }
   function endCall() { rtcManager?.endCall(); goto('/'); }
   function formatDuration(ms: number) {
     const totalSec = Math.floor(ms / 1000);

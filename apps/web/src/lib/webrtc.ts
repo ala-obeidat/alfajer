@@ -101,6 +101,8 @@ export class WebRTCManager {
   public onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
   public onCallEnded?: (byRemote: boolean) => void;
   public onRemoteIdentity?: (identity: string) => void;
+  /** Fires when the peer reports their camera on/off state (media_state). */
+  public onRemoteVideoState?: (enabled: boolean) => void;
   public onRoomFull?: () => void;
   public onPeerJoined?: () => void;
   public onJoinRequest?: (name: string) => void;
@@ -402,6 +404,10 @@ export class WebRTCManager {
       this.onCallEnded?.(true);
     } else if (msg.type === 'identity') {
       this.onRemoteIdentity?.(msg.payload);
+    } else if (msg.type === 'media_state') {
+      // Peer explicitly told us whether their camera is on. Authoritative —
+      // far more reliable than guessing from inbound frame rate.
+      this.onRemoteVideoState?.(!!(msg.payload && msg.payload.video));
     } else if (msg.type === 'request_join') {
       this.onJoinRequest?.(msg.payload);
     } else if (msg.type === 'join_accept') {
@@ -856,6 +862,12 @@ export class WebRTCManager {
 
   public sendIdentity(identity: string) {
     this.sendSignal({ type: 'identity', payload: identity });
+  }
+
+  /** Tell the peer whether our camera is currently sending video, so they can
+   *  show the camera-off avatar deterministically (no fps guessing). */
+  public sendVideoState(enabled: boolean) {
+    this.sendSignal({ type: 'media_state', payload: { video: enabled } });
   }
 
   private cleanup() {
