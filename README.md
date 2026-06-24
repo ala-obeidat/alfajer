@@ -169,6 +169,25 @@ explicitly eliminated, so accidental re-introduction is caught immediately:
 | `apps/signaling/src/rate-limit.test.ts` | Per-IP rate-limit logic correctness, window expiry, bucket isolation, X-Forwarded-For parsing, Headers-object compatibility |
 | `apps/signaling/src/security-invariants.test.ts` | Plaintext-chat regression, receiver-strictness, chat-queue zeroization on cleanup, SAS derived from public keys (not the shared secret), encrypt/decrypt-only key usages preserved, production fail-closed Origin check, CORS doesn't fall back to `*` in production, WS frame cap + 1009 close wired, payload/IP/room-ID never logged, additionalProperties:true on the typed body schema |
 
+### Functional & cross-browser end-to-end tests
+
+Beyond the security invariants, the call experience is covered by a functional
+test layer. Current status: **20 web unit tests pass** and **10 Playwright
+end-to-end tests pass across Chromium, Firefox, and WebKit** (engine-specific
+cases are skipped on the other engines).
+
+| Layer | Status | Covers |
+|---|---|---|
+| **Web unit** (`vitest`, `apps/web/src`) | 20 passing | The **real** E2EE frame logic shared by the worker and `WebRTCManager` (`transform-core.ts`): IV construction, per-kind header preservation, AES-GCM encrypt/decrypt round-trip, wrong-key + altered-IV rejection, audio/video key separation, and capability negotiation / mixed-client fallback — plus PWA install-eligibility detection across iOS & macOS Safari vs Chromium/Firefox UAs. |
+| **Playwright E2E** (`apps/web/tests`, Chromium + Firefox + WebKit) | 10 passing | Two-peer call setup (knock → accept / reject, sealed-room `1008`), the extended E2EE layer engaging (`securityState → 'e2ee'`) and the Firefox/no-`RTCRtpScriptTransform` DTLS-SRTP fallback label, the camera-off audio-sink guard, mic-AEC + speaker (`setSinkId`) device handling, WebSocket chat ciphertext (no plaintext on the wire) + forged-message drop, SAS code agreement across both peers, ICE-restart on network drop, the Safari/iOS install banner on real WebKit, and `getUserMedia`-denied handling. |
+
+These functional tests are **mutation-verified**: each key assertion has been
+confirmed to *fail* when its underlying feature is deliberately broken, so they
+guard real behaviour rather than passing vacuously. What they deliberately do
+**not** cover — and what still needs a human on real hardware — is acoustic echo
+on a physical external/Bluetooth speaker and the real iOS Safari "Add to Home
+Screen" install, neither of which a headless browser can faithfully reproduce.
+
 ### Things prior reviewers have gotten wrong (read this before flagging them again)
 
 Three claims have come up in past third-party reviews that are
