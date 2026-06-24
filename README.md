@@ -55,7 +55,7 @@ view, cross-referenced to the code that implements each control.
 | Control | Implementation |
 |---|---|
 | Per-peer media encryption | DTLS-SRTP (WebRTC baseline) |
-| Additional video + audio E2EE layer | AES-256-GCM via `RTCRtpScriptTransform` on every frame of both kinds. Negotiated via two capability flags (`e2eeSupported` for video, `audioE2EESupported` for audio); engaged independently per kind so a new client paired with an older video-only client still gets video E2EE while audio gracefully falls back to DTLS-SRTP. |
+| Additional video + audio E2EE layer | **Currently DISABLED** (`E2EE_TRANSFORM_ENABLED = false` in `apps/web/src/lib/webrtc.ts`). An AES-256-GCM-per-frame layer via `RTCRtpScriptTransform` is implemented and unit-tested, but a real-browser audit found it is not production-reliable — frames either bypass a late-attached transform (encrypting nothing) or get mangled (pixelated video, dropped audio in both directions). It is switched off until the transform is reattached at track-creation time and the keying transient is handled and device-tested. Calls currently run on DTLS-SRTP, which is itself genuine end-to-end encryption no server can decrypt. |
 | Key exchange | Elliptic-curve Diffie-Hellman over P-256 (Web Crypto `generateKey` + `deriveBits`) |
 | Key derivation | HKDF-SHA-256 with disjoint info labels — five keys per call: video sender/receiver (`alfajer-v1-<role>`), audio sender/receiver (`alfajer-v1-<role>-audio`), chat (`alfajer-v1-chat`) |
 | Per-direction × per-kind keys | Sender and receiver hold independent AES-GCM keys (`encrypt`-only / `decrypt`-only usages); video and audio use separate key chains, so an IV collision between peers OR between media kinds is structurally impossible to exploit |
@@ -64,7 +64,7 @@ view, cross-referenced to the code that implements each control.
 | Chat encryption | Separate AES-GCM key derived from the same ECDH secret; random 96-bit IV per message; the signaling server only ever sees opaque ciphertext + IV. Messages composed before the chat key is derived are **queued in JS memory and never sent over the wire as plaintext**; the receive side strictly rejects any incoming non-encrypted chat frame. |
 | Key material exposure | All `CryptoKey`s created with `extractable: false`; non-extractable in the worker too. The JS-visible view of the raw ECDH `deriveBits` output is `.fill(0)`'d after the HKDF base key is constructed. |
 | MITM detection (SAS) | After ECDH, each peer hashes both public keys in canonical order (offerer's first) and renders the first 4 bytes of SHA-256 as a 5-digit code. Both peers see the **same** code; a signaling-server MITM that swapped keys would produce divergent codes. Users compare verbally — a mismatch unambiguously reveals an active attack. ZRTP-style design. |
-| Security-state indicator | Visible UI badge during the call: 🔒 **E2EE** (script-transform engaged), 🔐 **DTLS-SRTP** (peer browser lacks the API, falling back to baseline WebRTC encryption), or ⏳ **Securing…** (handshake in progress). No silent downgrade. |
+| Security-state indicator | Visible UI badge during the call: 🔐 **DTLS-SRTP** — the state for every call while the extra layer is disabled, and itself genuine end-to-end encryption — or ⏳ **Securing…** (handshake in progress). The 🔒 **E2EE** badge is reserved for the extra script-transform layer and is not shown while that layer is off. No silent downgrade. |
 
 ### Transport security headers
 
@@ -179,7 +179,7 @@ cases are skipped on the other engines).
 | Layer | Status | Covers |
 |---|---|---|
 | **Web unit** (`vitest`, `apps/web/src`) | 20 passing | The **real** E2EE frame logic shared by the worker and `WebRTCManager` (`transform-core.ts`): IV construction, per-kind header preservation, AES-GCM encrypt/decrypt round-trip, wrong-key + altered-IV rejection, audio/video key separation, and capability negotiation / mixed-client fallback — plus PWA install-eligibility detection across iOS & macOS Safari vs Chromium/Firefox UAs. |
-| **Playwright E2E** (`apps/web/tests`, Chromium + Firefox + WebKit) | 10 passing | Two-peer call setup (knock → accept / reject, sealed-room `1008`), the extended E2EE layer engaging (`securityState → 'e2ee'`) and the Firefox/no-`RTCRtpScriptTransform` DTLS-SRTP fallback label, the camera-off audio-sink guard, mic-AEC + speaker (`setSinkId`) device handling, WebSocket chat ciphertext (no plaintext on the wire) + forged-message drop, SAS code agreement across both peers, ICE-restart on network drop, the Safari/iOS install banner on real WebKit, and `getUserMedia`-denied handling. |
+| **Playwright E2E** (`apps/web/tests`, Chromium + Firefox + WebKit) | 10 passing | Two-peer call setup (knock → accept / reject, sealed-room `1008`), the call settling on DTLS-SRTP (the extra script-transform layer is disabled), the camera-off audio-sink guard, mic-AEC + speaker (`setSinkId`) device handling, WebSocket chat ciphertext (no plaintext on the wire) + forged-message drop, SAS code agreement across both peers, ICE-restart on network drop, the Safari/iOS install banner on real WebKit, and `getUserMedia`-denied handling. |
 
 These functional tests are **mutation-verified**: each key assertion has been
 confirmed to *fail* when its underlying feature is deliberately broken, so they
@@ -379,8 +379,15 @@ on PC and server doesn't drift apart.
 
 ## E2EE notes
 
-Per-frame AES-256-GCM encryption via `RTCRtpScriptTransform` covers **both
-video and audio** when supported. Engagement is negotiated independently
+> **Status: the per-frame script-transform layer described here is currently
+> DISABLED** (`E2EE_TRANSFORM_ENABLED = false`). It is implemented and
+> unit-tested but not production-reliable — see the Cryptography table above.
+> Live calls use DTLS-SRTP, which is itself end-to-end encryption no server
+> can decrypt. The design below documents the layer as it will work once it is
+> re-enabled.
+
+When enabled, per-frame AES-256-GCM encryption via `RTCRtpScriptTransform`
+covers **both video and audio**. Engagement is negotiated independently
 per media kind, so the system degrades gracefully:
 
 | Both peers support… | Video E2EE | Audio E2EE | Chat E2EE |
@@ -433,15 +440,17 @@ ultra-long-duration calls ever become a use case.
 
 | Browser | Calls | E2EE (script-transform) | Screen sharing | PWA install |
 |---|---|---|---|---|
-| Chrome desktop | ✓ | ✓ | ✓ | ✓ |
-| Chrome Android | ✓ | ✓ | ✗ (no `getDisplayMedia` on phones) | ✓ |
-| Safari macOS | ✓ | ✓ | ✓ | ✓ |
-| Safari iOS | ✓ | ✓ (iOS 16.4+) | ✗ (not implemented on iPhone) | ✓ |
-| Firefox desktop | ✓ | partial | ✓ | partial |
-| Edge | ✓ | ✓ | ✓ | ✓ |
+| Chrome desktop | ✓ | off (disabled globally) | ✓ | ✓ |
+| Chrome Android | ✓ | off (disabled globally) | ✗ (no `getDisplayMedia` on phones) | ✓ |
+| Safari macOS | ✓ | off (disabled globally) | ✓ | ✓ |
+| Safari iOS | ✓ | off (disabled globally) | ✗ (not implemented on iPhone) | ✓ |
+| Firefox desktop | ✓ | off (disabled globally) | ✓ | partial |
+| Edge | ✓ | off (disabled globally) | ✓ | ✓ |
 
-Peers that don't support `RTCRtpScriptTransform` participate in calls
-normally; E2EE just isn't applied on top of DTLS-SRTP for that pair.
+The script-transform layer is currently disabled for everyone (see the E2EE
+notes above), so all calls run on DTLS-SRTP regardless of browser. When it is
+re-enabled, peers that lack `RTCRtpScriptTransform` will simply stay on
+DTLS-SRTP for that pair.
 
 ## License
 

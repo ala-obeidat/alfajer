@@ -3,6 +3,20 @@ import { negotiateUse, appliedKinds } from './e2ee/transform-core';
 
 const DEFAULT_SIGNALING_URL = 'http://localhost:3000';
 
+// KILL-SWITCH for the extra application-layer media encryption
+// (RTCRtpScriptTransform / the e2ee worker). DISABLED because it is not
+// production-reliable: a real-browser audit showed frames either bypass the
+// transform entirely (so it encrypts nothing) or — on engines that do route
+// frames through a late-attached transform — get mangled, producing
+// pixelated/garbled video and dropped audio in both directions. Until the
+// transform is reattached at track-creation time AND the keying transient is
+// handled (force-keyframe on key activation, validated on real devices), we
+// ship reliable DTLS-SRTP only, which is still genuine end-to-end encryption
+// (the signaling and TURN servers cannot decrypt it). ECDH-derived SAS
+// (MITM detection) and AES-GCM chat encryption are unaffected and stay on.
+// Flip back to true only once the transform is fixed and device-tested.
+const E2EE_TRANSFORM_ENABLED = false;
+
 function toWsUrl(httpUrl: string): string {
   return httpUrl.replace(/^http(s?):/, 'ws$1:');
 }
@@ -166,11 +180,12 @@ export class WebRTCManager {
     this.pc = new RTCPeerConnection({ iceServers });
 
     this.worker = new Worker(new URL('./e2ee/transform.worker.ts', import.meta.url), { type: 'module' });
-    this.myE2EESupport = WebRTCManager.isE2EESupported();
-    // Audio E2EE rides on the same RTCRtpScriptTransform API as video,
-    // but uses a 1-byte Opus-TOC-preserving header instead of the 10-byte
-    // video payload-descriptor preserve. Any browser that supports
-    // script-transform supports audio too.
+    // Advertise the extended layer only when the kill-switch is on AND the
+    // browser has the API. With it off we negotiate e2eeSupported:false, so
+    // BOTH peers (any code version) fall back to DTLS-SRTP — no transform is
+    // attached on either side, so nothing can mangle the media.
+    this.myE2EESupport = E2EE_TRANSFORM_ENABLED && WebRTCManager.isE2EESupported();
+    // Audio rides on the same RTCRtpScriptTransform API as video.
     this.myAudioE2EESupport = this.myE2EESupport;
 
     this.pc.ontrack = (event) => {

@@ -835,10 +835,10 @@
             {/if}
           {:else if securityState === 'dtls-srtp'}
             <span>
-              Your peer's browser doesn't support the extended E2EE layer, so this call uses
-              <strong>WebRTC's built-in DTLS-SRTP</strong> for both audio and video.
-              No server in between can decrypt your media, but the extra-layer protection that defends
-              against a hypothetical future DTLS break is not active. Compare the code above to be sure
+              This call is end-to-end encrypted with <strong>WebRTC's built-in DTLS-SRTP</strong>
+              for both audio and video — no signaling or TURN server in between can decrypt your media.
+              (The optional extra application-layer encryption is currently turned off while we make it
+              reliable, so it isn't active on this call.) Compare the code above to be sure
               you're talking to the right person.
             </span>
           {:else}

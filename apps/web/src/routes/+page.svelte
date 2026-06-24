@@ -141,7 +141,7 @@
     </p>
 
     <div class="badges">
-      <span class="badge" title="AES-256-GCM with per-direction HKDF keys derived from ECDH P-256">🔒 End-to-end encrypted</span>
+      <span class="badge" title="End-to-end encrypted via WebRTC DTLS-SRTP — no signaling or TURN server can decrypt your call. Chat adds AES-256-GCM from an ECDH P-256 / HKDF key.">🔒 End-to-end encrypted</span>
       <span class="badge" title="Rooms live only in memory. Last byte erased when the second peer leaves.">📭 Nothing stored</span>
       <span class="badge" title="Self-hosted signaling and TURN. No third-party trackers.">⚡ Self-hosted</span>
     </div>

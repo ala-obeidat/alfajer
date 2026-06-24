@@ -36,13 +36,12 @@
       This is the same encryption used by Google Meet, WhatsApp calls, and every other modern WebRTC product.
     </li>
     <li>
-      <strong>Layer 2 — App-level frame encryption (when both browsers support it).</strong> When both your browser and your peer's
-      browser support the modern <code>RTCRtpScriptTransform</code> API, we add AES-256-GCM encryption on each <strong>video and
-      audio</strong> frame before it reaches WebRTC. The keys are derived from an Elliptic-Curve Diffie-Hellman exchange and run
-      through HKDF-SHA-256 to produce <em>separate keys per direction and per media kind</em> — four independent keys total. Even
-      if DTLS-SRTP were ever broken in the future, your video and audio would still be protected by this independent layer.
-      Each kind preserves only what the packetizer needs unencrypted: 10 bytes for video payload descriptors, 1 byte for the
-      Opus TOC in audio. Everything after that is ciphertext.
+      <strong>Layer 2 — App-level frame encryption (currently turned off).</strong> We have built an additional layer that adds
+      AES-256-GCM encryption to each video and audio frame (via the browser's <code>RTCRtpScriptTransform</code> API, with keys
+      from an Elliptic-Curve Diffie-Hellman exchange). It is <strong>currently disabled</strong> because it was not yet reliable on
+      all devices — in testing it could garble video or drop audio — so we turned it off rather than risk your calls. Your calls
+      today are protected by Layer 1 (DTLS-SRTP) above, which is real end-to-end encryption. We'll re-enable this extra layer once
+      it's solid on real phones and desktops.
     </li>
     <li>
       <strong>In-call chat uses its own dedicated key.</strong> Text messages are encrypted with a separate AES-GCM key derived from

@@ -164,14 +164,16 @@ test.describe('Alfajer Deep Functional Test Pass', () => {
     await peerPage.waitForSelector('.remote-video-wrapper video');
     await hostPage.screenshot({ path: testInfo.outputPath('2_connected_call.png') });
 
-    // 4b. Happy-path E2EE: Chromium supports RTCRtpScriptTransform, so the
-    //     extra AES-GCM layer must ENGAGE on both peers (securityState ->
-    //     'e2ee'), not merely fall back to DTLS-SRTP. This is the positive
-    //     counterpart to the Firefox fallback test in deeper_functional_pass.
-    await expect(hostPage.locator('.security-pill.e2ee')).toBeVisible({ timeout: 10000 });
-    await expect(peerPage.locator('.security-pill.e2ee')).toBeVisible({ timeout: 10000 });
-    await expect(hostPage.locator('.security-pill')).toContainText('Encrypted');
-    console.log('[TEST] happy-path E2EE engaged on both peers ✓');
+    // 4b. Security state. The extra application-layer script-transform is
+    //     currently DISABLED (E2EE_TRANSFORM_ENABLED=false): on real browsers
+    //     it mangled media into pixelated/garbled video with no audio, so every
+    //     call settles on DTLS-SRTP — which is still genuine end-to-end
+    //     encryption that no signaling/TURN server can decrypt. Assert that
+    //     honest state on both peers (and that it never claims the extra layer).
+    await expect(hostPage.locator('.security-pill.dtls')).toBeVisible({ timeout: 10000 });
+    await expect(peerPage.locator('.security-pill.dtls')).toBeVisible({ timeout: 10000 });
+    await expect(hostPage.locator('.security-pill.e2ee')).toHaveCount(0);
+    console.log('[TEST] both peers on DTLS-SRTP (extra layer disabled) ✓');
 
     // 5. Initial capture asserts AEC is on for both peers.
     // Assert on the REQUESTED constraints, not track.getSettings(): Chromium's
