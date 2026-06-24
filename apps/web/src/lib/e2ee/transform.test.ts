@@ -1,66 +1,26 @@
-import { describe, it, expect, vi } from 'vitest';
-
-// ---------------------------------------------------------------------
-// 1. IV Generator & Header Preservation Logic Replicas
-// ---------------------------------------------------------------------
-
-function buildIv(timestamp: number, ssrc: number): ArrayBuffer {
-  const iv = new ArrayBuffer(12);
-  const view = new DataView(iv);
-  view.setUint32(0, timestamp >>> 0);
-  view.setUint32(4, ssrc >>> 0);
-  return iv;
-}
-
-const VIDEO_HEADER_SIZE = 10;
-const AUDIO_HEADER_SIZE = 1;
-
-async function encryptFrame(
-  data: Uint8Array,
-  headerSize: number,
-  key: CryptoKey,
-  iv: ArrayBuffer
-): Promise<Uint8Array> {
-  const header = data.subarray(0, headerSize);
-  const body = data.subarray(headerSize);
-  const enc = new Uint8Array(
-    await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, body)
-  );
-  const out = new Uint8Array(header.length + enc.length);
-  out.set(header, 0);
-  out.set(enc, header.length);
-  return out;
-}
-
-async function decryptFrame(
-  data: Uint8Array,
-  headerSize: number,
-  key: CryptoKey,
-  iv: ArrayBuffer
-): Promise<Uint8Array> {
-  const header = data.subarray(0, headerSize);
-  const body = data.subarray(headerSize);
-  const dec = new Uint8Array(
-    await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, body)
-  );
-  const out = new Uint8Array(header.length + dec.length);
-  out.set(header, 0);
-  out.set(dec, header.length);
-  return out;
-}
-
-// ---------------------------------------------------------------------
-// Test Suite
-// ---------------------------------------------------------------------
+import { describe, it, expect } from 'vitest';
+// Import the REAL shipping code (shared by transform.worker.ts and webrtc.ts),
+// not a re-implementation. A previous version of this file copied all of this
+// logic inline and stayed green even when the worker's IV/header/crypto code
+// was corrupted — so it certified nothing.
+import {
+  buildIv,
+  VIDEO_HEADER_SIZE,
+  AUDIO_HEADER_SIZE,
+  encryptFrame,
+  decryptFrame,
+  negotiateUse,
+  appliedKinds,
+} from './transform-core';
 
 describe('Audio + Video E2EE Worker Logic', () => {
   it('IV generation packs 32-bit timestamp and SSRC correctly', () => {
     const timestamp = 0x11223344;
     const ssrc = 0x55667788;
     const iv = buildIv(timestamp, ssrc);
-    
+
     expect(iv.byteLength).toBe(12);
-    
+
     const view = new DataView(iv);
     expect(view.getUint32(0)).toBe(timestamp);
     expect(view.getUint32(4)).toBe(ssrc);
@@ -68,7 +28,6 @@ describe('Audio + Video E2EE Worker Logic', () => {
   });
 
   it('audio E2EE preserves exactly 1-byte Opus TOC header, encrypts body, and decrypts correctly', async () => {
-    // Generate AES-GCM key
     const key = await crypto.subtle.generateKey(
       { name: 'AES-GCM', length: 256 },
       true,
@@ -83,9 +42,8 @@ describe('Audio + Video E2EE Worker Logic', () => {
 
     const iv = buildIv(1234567, 987654);
 
-    // Encrypt
     const encrypted = await encryptFrame(originalFrame, AUDIO_HEADER_SIZE, key, iv);
-    
+
     // Header preservation checks
     expect(encrypted.length).toBeGreaterThan(originalFrame.length); // AES-GCM tag adds overhead
     expect(encrypted[0]).toBe(originalFrame[0]); // 1st byte (TOC header) preserved exactly
@@ -95,7 +53,6 @@ describe('Audio + Video E2EE Worker Logic', () => {
     const originalBody = originalFrame.subarray(AUDIO_HEADER_SIZE);
     expect(encryptedBody).not.toEqual(originalBody);
 
-    // Decrypt
     const decrypted = await decryptFrame(encrypted, AUDIO_HEADER_SIZE, key, iv);
     expect(decrypted).toEqual(originalFrame);
   });
@@ -115,9 +72,8 @@ describe('Audio + Video E2EE Worker Logic', () => {
 
     const iv = buildIv(7654321, 456789);
 
-    // Encrypt
     const encrypted = await encryptFrame(originalFrame, VIDEO_HEADER_SIZE, key, iv);
-    
+
     // Header preservation checks
     expect(encrypted.length).toBeGreaterThan(originalFrame.length);
     expect(encrypted.subarray(0, 10)).toEqual(originalFrame.subarray(0, 10)); // first 10 bytes preserved
@@ -127,7 +83,6 @@ describe('Audio + Video E2EE Worker Logic', () => {
     const originalBody = originalFrame.subarray(VIDEO_HEADER_SIZE);
     expect(encryptedBody).not.toEqual(originalBody);
 
-    // Decrypt
     const decrypted = await decryptFrame(encrypted, VIDEO_HEADER_SIZE, key, iv);
     expect(decrypted).toEqual(originalFrame);
   });
@@ -149,12 +104,25 @@ describe('Audio + Video E2EE Worker Logic', () => {
 
     const encrypted = await encryptFrame(originalFrame, AUDIO_HEADER_SIZE, key1, iv);
 
-    // Decrypting with correct key works
     const decryptedCorrect = await decryptFrame(encrypted, AUDIO_HEADER_SIZE, key1, iv);
     expect(decryptedCorrect).toEqual(originalFrame);
 
-    // Decrypting with wrong key throws OperationError / AesGcm auth failure
+    // Decrypting with the wrong key throws OperationError / AES-GCM auth failure
     await expect(decryptFrame(encrypted, AUDIO_HEADER_SIZE, key2, iv))
+      .rejects.toThrow();
+  });
+
+  it('decryption fails if the IV (timestamp/ssrc) is altered', async () => {
+    // Guards the IV construction: a frame encrypted under (ts, ssrc) must not
+    // decrypt under a different IV — i.e. buildIv actually feeds AES-GCM.
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt']
+    );
+    const frame = new Uint8Array([7, 10, 20, 30, 40, 50, 60]);
+    const encrypted = await encryptFrame(frame, AUDIO_HEADER_SIZE, key, buildIv(111, 222));
+    await expect(decryptFrame(encrypted, AUDIO_HEADER_SIZE, key, buildIv(111, 999)))
       .rejects.toThrow();
   });
 
@@ -165,32 +133,27 @@ describe('Audio + Video E2EE Worker Logic', () => {
       ['encrypt', 'decrypt']
     );
 
-    // If frame size is <= headerSize, it is pathologically small.
-    // Audio headerSize = 1. A 1-byte frame should be skipped and left unencrypted.
+    // The worker skips encryption when frame length <= headerSize. We mirror
+    // that guard here over the real header-size constants.
     const tinyAudioFrame = new Uint8Array([0xAA]); // TOC byte only
     const iv = buildIv(111, 222);
-
-    const audioLength = tinyAudioFrame.length;
     let encAudio = tinyAudioFrame;
-    if (audioLength > AUDIO_HEADER_SIZE) {
+    if (tinyAudioFrame.length > AUDIO_HEADER_SIZE) {
       encAudio = await encryptFrame(tinyAudioFrame, AUDIO_HEADER_SIZE, key, iv);
     }
-    expect(encAudio).toEqual(tinyAudioFrame); // preserved unchanged!
+    expect(encAudio).toEqual(tinyAudioFrame); // preserved unchanged
 
-    // Video headerSize = 10. An 8-byte frame should be skipped and left unencrypted.
     const tinyVideoFrame = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
-    const videoLength = tinyVideoFrame.length;
     let encVideo = tinyVideoFrame;
-    if (videoLength > VIDEO_HEADER_SIZE) {
+    if (tinyVideoFrame.length > VIDEO_HEADER_SIZE) {
       encVideo = await encryptFrame(tinyVideoFrame, VIDEO_HEADER_SIZE, key, iv);
     }
-    expect(encVideo).toEqual(tinyVideoFrame); // preserved unchanged!
+    expect(encVideo).toEqual(tinyVideoFrame); // preserved unchanged
   });
 });
 
 describe('Symmetric Key Separation (HKDF)', () => {
   it('audio and video derive separate keys using distinct info labels', async () => {
-    // Generate ECDH key pair
     const aliceKeyPair = await crypto.subtle.generateKey(
       { name: 'ECDH', namedCurve: 'P-256' },
       true,
@@ -202,7 +165,6 @@ describe('Symmetric Key Separation (HKDF)', () => {
       ['deriveKey', 'deriveBits']
     );
 
-    // Derive shared secret
     const sharedBits = await crypto.subtle.deriveBits(
       { name: 'ECDH', public: bobKeyPair.publicKey },
       aliceKeyPair.privateKey,
@@ -231,11 +193,9 @@ describe('Symmetric Key Separation (HKDF)', () => {
       ['encrypt']
     );
 
-    // Derivations for offerer role
     const videoKey = await deriveAesKey('alfajer-v1-offerer');
     const audioKey = await deriveAesKey('alfajer-v1-offerer-audio');
 
-    // Export raw bytes to prove they are physically distinct keys
     const rawVideo = new Uint8Array(await crypto.subtle.exportKey('raw', videoKey));
     const rawAudio = new Uint8Array(await crypto.subtle.exportKey('raw', audioKey));
 
@@ -245,132 +205,31 @@ describe('Symmetric Key Separation (HKDF)', () => {
   });
 });
 
-// ---------------------------------------------------------------------
-// 2. Peer Capability Negotiation & Fallback Mock Tests
-// ---------------------------------------------------------------------
-
-class MockWebRTCManager {
-  public myE2EESupport = true;
-  public myAudioE2EESupport = true;
-  
-  public peerE2EESupport = false;
-  public peerAudioE2EESupport = false;
-
-  public useE2EE = false;
-  public useAudioE2EE = false;
-
-  public signalingHistory: any[] = [];
-  public appliedTransforms: string[] = [];
-
-  constructor(myAudioSupport = true) {
-    this.myAudioE2EESupport = myAudioSupport;
-  }
-
-  // Simulates receiving offer/answer
-  public handleSignal(msg: any) {
-    if (msg.type === 'offer' || msg.type === 'answer') {
-      this.peerE2EESupport = msg.e2eeSupported === true;
-      this.peerAudioE2EESupport = msg.audioE2EESupported === true;
-      
-      this.useE2EE = this.myE2EESupport && this.peerE2EESupport;
-      this.useAudioE2EE = this.myAudioE2EESupport && this.peerAudioE2EESupport;
-
-      this.applyTransformsIfReady();
-    }
-  }
-
-  public tryIceRestart() {
-    this.sendSignal({
-      type: 'offer',
-      e2eeSupported: this.myE2EESupport,
-      audioE2EESupported: this.myAudioE2EESupport
-    });
-  }
-
-  public replaceTrack(kind: 'audio' | 'video') {
-    // Late track switches re-apply transforms for safety
-    this.applyTransformsIfReady();
-  }
-
-  private sendSignal(msg: any) {
-    this.signalingHistory.push(msg);
-  }
-
-  private applyTransformsIfReady() {
-    this.appliedTransforms = [];
-    if (this.useE2EE) {
-      this.appliedTransforms.push('video');
-    }
-    if (this.useAudioE2EE) {
-      this.appliedTransforms.push('audio');
-    }
-  }
-}
-
 describe('WebRTC Capability Negotiation & Mixed Client Fallbacks', () => {
-  it('audioE2EESupported is correctly negotiated when both peers support it', () => {
-    const manager = new MockWebRTCManager(true);
-    
-    // Simulate offer from new client supporting audio E2EE
-    manager.handleSignal({
-      type: 'offer',
-      e2eeSupported: true,
-      audioE2EESupported: true
-    });
-
-    expect(manager.useE2EE).toBe(true);
-    expect(manager.useAudioE2EE).toBe(true);
-    expect(manager.appliedTransforms).toContain('video');
-    expect(manager.appliedTransforms).toContain('audio');
+  it('uses the extended layer for a kind only when BOTH peers support it', () => {
+    expect(negotiateUse(true, true)).toBe(true);
+    expect(negotiateUse(true, false)).toBe(false); // peer is video-only / older
+    expect(negotiateUse(false, true)).toBe(false); // we don't support it
+    expect(negotiateUse(false, false)).toBe(false);
   });
 
-  it('audio E2EE gracefully falls back to DTLS-SRTP (useAudioE2EE = false) when paired with a video-only peer', () => {
-    const manager = new MockWebRTCManager(true);
-    
-    // Simulate offer from old client that only supports video E2EE (audioE2EESupported is undefined or false)
-    manager.handleSignal({
-      type: 'offer',
-      e2eeSupported: true,
-      audioE2EESupported: false
-    });
-
-    expect(manager.useE2EE).toBe(true);
-    expect(manager.useAudioE2EE).toBe(false);
-    expect(manager.appliedTransforms).toContain('video');
-    expect(manager.appliedTransforms).not.toContain('audio'); // Audio safely falls back to DTLS-SRTP without breaking video E2EE
+  it('applies both kinds when audio + video E2EE are negotiated', () => {
+    const useVideo = negotiateUse(true, true);
+    const useAudio = negotiateUse(true, true);
+    expect(appliedKinds(useVideo, useAudio)).toEqual(['video', 'audio']);
   });
 
-  it('ICE restart successfully preserves capability negotiation flags', () => {
-    const manager = new MockWebRTCManager(true);
-    manager.tryIceRestart();
-
-    expect(manager.signalingHistory.length).toBe(1);
-    expect(manager.signalingHistory[0]).toEqual({
-      type: 'offer',
-      e2eeSupported: true,
-      audioE2EESupported: true
-    });
+  it('audio falls back to DTLS-SRTP (video stays E2EE) against a video-only peer', () => {
+    const useVideo = negotiateUse(true, true);
+    const useAudio = negotiateUse(true, false); // peer advertised no audio E2EE
+    const kinds = appliedKinds(useVideo, useAudio);
+    expect(useVideo).toBe(true);
+    expect(useAudio).toBe(false);
+    expect(kinds).toContain('video');
+    expect(kinds).not.toContain('audio');
   });
 
-  it('late track switches successfully re-apply E2EE transforms correctly', () => {
-    const manager = new MockWebRTCManager(true);
-    
-    manager.handleSignal({
-      type: 'offer',
-      e2eeSupported: true,
-      audioE2EESupported: true
-    });
-    
-    expect(manager.appliedTransforms).toEqual(['video', 'audio']);
-
-    // Simulate mic switch
-    manager.appliedTransforms = [];
-    manager.replaceTrack('audio');
-    expect(manager.appliedTransforms).toEqual(['video', 'audio']); // transform is re-applied correctly
-
-    // Simulate camera switch
-    manager.appliedTransforms = [];
-    manager.replaceTrack('video');
-    expect(manager.appliedTransforms).toEqual(['video', 'audio']);
+  it('applies nothing when neither kind is negotiated', () => {
+    expect(appliedKinds(false, false)).toEqual([]);
   });
 });

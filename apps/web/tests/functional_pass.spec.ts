@@ -2,11 +2,9 @@ import { test, expect, chromium } from '@playwright/test';
 
 // Deep functional / regression pass for Alfajer.
 //
-// PREREQUISITES (no webServer is wired into playwright.config.ts yet):
-//   1. Signaling server running:  bun --cwd apps/signaling dev   (port 3000)
-//   2. Web app running:           bun --cwd apps/web dev          (port 5173)
-//      with apps/web/.env containing PUBLIC_SIGNALING_URL=http://localhost:3000
-//   3. Chromium for Playwright:   bunx playwright install chromium
+// playwright.config.ts wires a webServer, so `bunx playwright test` boots the
+// signaling (:3000) + web (:5173) servers itself — no manual setup. Chromium
+// must be installed once (`bunx playwright install chromium`).
 //
 // Screenshots are written to each test's Playwright output dir via
 // testInfo.outputPath(), so the spec is portable across machines / CI.
@@ -176,16 +174,21 @@ test.describe('Alfajer Deep Functional Test Pass', () => {
     console.log('[TEST] happy-path E2EE engaged on both peers ✓');
 
     // 5. Initial capture asserts AEC is on for both peers.
+    // Assert on the REQUESTED constraints, not track.getSettings(): Chromium's
+    // fake device reports echoCancellation/etc. true by default regardless of
+    // what was asked, so getSettings() can't distinguish "app requested AEC"
+    // from "device default". The captured constraints object is the real proof.
     const checkInitialAec = async (page: typeof hostPage, role: string) => {
-      const settings = await page.evaluate(() => {
+      const audioConstraints = await page.evaluate(() => {
         const audio = (window as any).capturedStreams?.filter((s: any) => s.stream.getAudioTracks().length > 0);
-        return audio?.[audio.length - 1]?.stream.getAudioTracks()[0]?.getSettings() ?? null;
+        const c = audio?.[0]?.constraints?.audio; // first audio capture = startMediaAndCall
+        return c && typeof c === 'object' ? c : null;
       });
-      console.log(`[TEST] ${role} initial mic settings: ${JSON.stringify(settings)}`);
-      expect(settings).not.toBeNull();
-      expect(settings.echoCancellation).toBe(true);
-      expect(settings.noiseSuppression).toBe(true);
-      expect(settings.autoGainControl).toBe(true);
+      console.log(`[TEST] ${role} initial mic constraints: ${JSON.stringify(audioConstraints)}`);
+      expect(audioConstraints).not.toBeNull();
+      expect(audioConstraints.echoCancellation).toBe(true);
+      expect(audioConstraints.noiseSuppression).toBe(true);
+      expect(audioConstraints.autoGainControl).toBe(true);
     };
     await checkInitialAec(hostPage, 'Host');
     await checkInitialAec(peerPage, 'Peer');
@@ -223,6 +226,10 @@ test.describe('Alfajer Deep Functional Test Pass', () => {
     //    The placeholder must OVERLAY the remote <video> (the sole audio sink),
     //    not replace it. Pre-fix, the <video> was unmounted here, silencing
     //    remote audio (and it never returned because ontrack doesn't re-fire).
+    //    NB: fake-media Chromium keeps sending frames on a disabled track, so
+    //    the camera-off DETECTION (fps→0) is forced via mockRemoteVideoOff
+    //    below; this test proves the fps-0→overlay→audio-survives half, not the
+    //    real "disabled track → fps 0" link.
     await peerPage.click('button[aria-label="Camera off"]');
     await hostPage.evaluate(() => { (window as any).mockRemoteVideoOff = true; });
 
@@ -268,7 +275,10 @@ test.describe('Alfajer Deep Functional Test Pass', () => {
     await expect(hostPage.locator('.msg-them .bubble')).toHaveText('Hey Alice, E2EE works!', { timeout: 5000 });
     await hostPage.screenshot({ path: testInfo.outputPath('5_chat_active.png') });
 
-    // 10. Safety code (SAS): identical 5 digits on both sides; verify state.
+    // 10. Safety code (SAS). The real security property is that both peers
+    //     independently derive the SAME 5 digits from the ECDH exchange — that
+    //     assertion below is the meaningful one. The "Codes match" → verified
+    //     class transition is just UI-state smoke.
     const hostCode = await hostPage.locator('.security-pill .sas-mini').textContent();
     const peerCode = await peerPage.locator('.security-pill .sas-mini').textContent();
     console.log(`[TEST] SAS host=${hostCode} peer=${peerCode}`);

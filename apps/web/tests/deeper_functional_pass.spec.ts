@@ -258,15 +258,20 @@ test.describe('Alfajer Deep Functional Test Pass - Second Phase', () => {
     const savedSpk = await hostPage.evaluate(() => localStorage.getItem('alfajer.pref.speakerId'));
     expect(savedSpk).toBe('mock-speaker-2');
 
-    // Verify mic AEC track settings are still active after speaker change
-    const hostMicSettings = await hostPage.evaluate(() => {
+    // A speaker switch does not re-capture the mic, so the active mic is still
+    // the initial capture. Assert it was REQUESTED with AEC via the captured
+    // constraints — getSettings() on a fake device reports AEC true regardless,
+    // so it would pass even if the app never asked for it.
+    const hostMicConstraints = await hostPage.evaluate(() => {
       const audio = (window as any).capturedStreams?.filter((s: any) => s.stream.getAudioTracks().length > 0);
-      return audio?.[audio.length - 1]?.stream.getAudioTracks()[0]?.getSettings() ?? null;
+      const c = audio?.[0]?.constraints?.audio;
+      return c && typeof c === 'object' ? c : null;
     });
-    console.log('[TEST] Host mic settings after speaker switch:', JSON.stringify(hostMicSettings));
-    expect(hostMicSettings.echoCancellation).toBe(true);
-    expect(hostMicSettings.noiseSuppression).toBe(true);
-    expect(hostMicSettings.autoGainControl).toBe(true);
+    console.log('[TEST] Host mic constraints (unchanged by speaker switch):', JSON.stringify(hostMicConstraints));
+    expect(hostMicConstraints).not.toBeNull();
+    expect(hostMicConstraints.echoCancellation).toBe(true);
+    expect(hostMicConstraints.noiseSuppression).toBe(true);
+    expect(hostMicConstraints.autoGainControl).toBe(true);
 
     // Verify restoration of preferred speaker sink on reconnect event
     await hostPage.evaluate(() => {
@@ -405,7 +410,13 @@ test.describe('Alfajer Deep Functional Test Pass - Second Phase', () => {
     await browser.close();
   });
 
-  test('Firefox E2EE fallback validation', async ({}, testInfo) => {
+  // NOTE: headless Firefox loopback ICE fails (no TURN), so the media call does
+  // NOT truly connect — the run logs show "ICE failed". This verifies a NARROW
+  // property only: with RTCRtpScriptTransform absent (Firefox lacks it), the
+  // security state derived from the ECDH-over-signaling handshake is labeled
+  // "DTLS-SRTP only". The connected UI is SIMULATED via mockConnectedState so
+  // the security pill renders; this is NOT a claim of a working Firefox call.
+  test('Firefox labels DTLS-SRTP only when RTCRtpScriptTransform is absent', async ({}, testInfo) => {
     test.skip(testInfo.project.name !== 'firefox', 'Runs only on Firefox');
 
     const browser = await firefox.launch({
@@ -431,7 +442,9 @@ test.describe('Alfajer Deep Functional Test Pass - Second Phase', () => {
     await injectSpysAndMockMic(hostPage);
     await injectSpysAndMockMic(peerPage);
 
-    // Pre-mock mockConnectedState to 'connected' and disable RTCRtpScriptTransform to force DTLS-SRTP fallback
+    // Force the connected UI (headless Firefox loopback ICE never completes) so
+    // the security pill renders. The delete is belt-and-braces — Firefox has no
+    // RTCRtpScriptTransform anyway, which is precisely why it must fall back.
     await hostPage.addInitScript(() => {
       (window as any).mockConnectedState = 'connected';
       delete (window as any).RTCRtpScriptTransform;
@@ -484,11 +497,12 @@ test.describe('Alfajer Deep Functional Test Pass - Second Phase', () => {
     // Wait for connection
     await expect(hostPage.locator('.security-pill')).toBeVisible({ timeout: 15000 });
 
-    // Since Firefox does NOT support RTCRtpScriptTransform, it must fallback gracefully to DTLS-SRTP.
+    // No RTCRtpScriptTransform → securityState stays 'dtls-srtp' and the card
+    // labels it. (Post-handshake label, not proof that media flowed.)
     await hostPage.click('.security-pill');
     await expect(hostPage.locator('.sas-card')).toBeVisible();
     await expect(hostPage.locator('.sas-card')).toContainText('DTLS-SRTP only');
-    console.log('[TEST] Firefox successfully fallback to DTLS-SRTP only mode');
+    console.log('[TEST] Firefox labels DTLS-SRTP only (no ScriptTransform) ✓');
 
     await browser.close();
   });
@@ -544,32 +558,13 @@ test.describe('Alfajer Deep Functional Test Pass - Second Phase', () => {
     await expect(rejectToast).toBeVisible({ timeout: 5000 });
     console.log('[TEST] Knock rejection and redirect worked correctly');
 
-    // Explicitly close signaling WebSockets from client to force server teardown
-    await hostPage.evaluate(() => {
-      (window as any).webSockets?.forEach((ws: any) => {
-        if (ws.url.includes('/call/')) ws.close();
-      });
-    });
-    await peerPage.evaluate(() => {
-      (window as any).webSockets?.forEach((ws: any) => {
-        if (ws.url.includes('/call/')) ws.close();
-      });
-    });
-
-    // Navigate away to cleanly close WebSocket connections from both pages
-    await hostPage.goto('/');
-    await peerPage.goto('/');
-
-    // Close pages explicitly to trigger immediate socket closure
-    await hostPage.close();
-    await peerPage.close();
-
-    // Close the old contexts to cleanly close all WebSocket connections and wipe memory
+    // Close the old contexts (closes their pages + signaling sockets). No wait
+    // needed: room.ts prunes a room the instant a peer leaves (no TTL), and the
+    // sealed-room test below uses a fresh, unrelated room id regardless. The
+    // previous 16s sleep here was premised on a server-side TTL that doesn't
+    // exist.
     await hostContext.close();
     await peerContext.close();
-
-    // Wait a brief moment for the signaling server to prune the room
-    await new Promise(resolve => setTimeout(resolve, 16000));
 
     // Create fresh new contexts for host and peer
     const newHostContext = await browser.newContext({ permissions: ['camera', 'microphone'] });

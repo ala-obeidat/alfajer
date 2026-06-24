@@ -1,4 +1,5 @@
 import { PUBLIC_SIGNALING_URL, PUBLIC_TURN_URL } from '$env/static/public';
+import { negotiateUse, appliedKinds } from './e2ee/transform-core';
 
 const DEFAULT_SIGNALING_URL = 'http://localhost:3000';
 
@@ -338,8 +339,8 @@ export class WebRTCManager {
       this.localSdpRole = 'answerer';
       this.peerE2EESupport = msg.e2eeSupported === true;
       this.peerAudioE2EESupport = msg.audioE2EESupported === true;
-      this.useE2EE = this.myE2EESupport && this.peerE2EESupport;
-      this.useAudioE2EE = this.myAudioE2EESupport && this.peerAudioE2EESupport;
+      this.useE2EE = negotiateUse(this.myE2EESupport, this.peerE2EESupport);
+      this.useAudioE2EE = negotiateUse(this.myAudioE2EESupport, this.peerAudioE2EESupport);
 
       await this.initECDH();
       await this.pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
@@ -365,8 +366,8 @@ export class WebRTCManager {
     } else if (msg.type === 'answer') {
       this.peerE2EESupport = msg.e2eeSupported === true;
       this.peerAudioE2EESupport = msg.audioE2EESupported === true;
-      this.useE2EE = this.myE2EESupport && this.peerE2EESupport;
-      this.useAudioE2EE = this.myAudioE2EESupport && this.peerAudioE2EESupport;
+      this.useE2EE = negotiateUse(this.myE2EESupport, this.peerE2EESupport);
+      this.useAudioE2EE = negotiateUse(this.myAudioE2EESupport, this.peerAudioE2EESupport);
 
       await this.pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
       await this.deriveSharedSecret(msg.ecdhPublicKey);
@@ -780,8 +781,8 @@ export class WebRTCManager {
     // Audio: gated on the newer audioE2EESupported handshake (useAudioE2EE).
     //        Both peers signal both flags; when paired with an older
     //        video-only client, audio falls back to DTLS-SRTP only.
-    const shouldApply = (kind: 'audio' | 'video'): boolean =>
-      kind === 'video' ? this.useE2EE : this.useAudioE2EE;
+    const kindsToApply = new Set(appliedKinds(this.useE2EE, this.useAudioE2EE));
+    const shouldApply = (kind: 'audio' | 'video'): boolean => kindsToApply.has(kind);
 
     // Sender side — apply per sender, deduped via WeakSet
     let anyApplied = false;
