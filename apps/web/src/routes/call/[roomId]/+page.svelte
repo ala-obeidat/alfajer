@@ -945,20 +945,26 @@
 
   <div class="videos">
     <div class="video-wrapper remote-video-wrapper" class:speaking={remoteSpeaking}>
+      <!-- The remote <video> is the SOLE sink for the remote stream's audio as
+           well as its picture, so it must stay mounted even when the peer's
+           camera is off. Unmounting it (the old {#if/:else} swap) silenced the
+           remote audio — and it never came back, because pc.ontrack doesn't
+           re-fire for the same track, so a freshly mounted <video> never got
+           its srcObject re-assigned. The camera-off placeholder is therefore an
+           opaque OVERLAY on top of the still-playing video, not a replacement. -->
+      <video
+        bind:this={remoteVideoRef}
+        autoplay
+        playsinline
+        onloadedmetadata={onRemoteLoaded}
+        class="remote-video"
+      ></video>
       {#if remoteVideoOff}
         <div class="video-off-state" in:fade>
           <div class="avatar">{remoteNickInitial}</div>
           <div class="off-label">{prettyId(remoteIdentity) || 'Connected'}</div>
           <div class="off-sub">Camera off</div>
         </div>
-      {:else}
-        <video
-          bind:this={remoteVideoRef}
-          autoplay
-          playsinline
-          onloadedmetadata={onRemoteLoaded}
-          class="remote-video"
-        ></video>
       {/if}
       {#if remoteIdentity}
         <div class="name-badge">{prettyId(remoteIdentity)}</div>
@@ -1393,6 +1399,9 @@
   }
 
   .video-off-state {
+    /* Opaque overlay covering the still-mounted remote <video> (which keeps
+       playing the remote audio). Sits below the name-badge (z-index 20). */
+    position: absolute; inset: 0; z-index: 5;
     inline-size: 100%; block-size: 100%;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     color: white; gap: 0.5rem; background: linear-gradient(135deg, #1e293b, #0f172a);
