@@ -286,14 +286,47 @@
     return m ? m[1] : (id || '');
   }
 
+  // Acquire local media with graceful degradation: if the combined request
+  // fails (e.g. the user has blocked the camera at the site level but allowed
+  // the mic), fall back to audio-only — a voice call beats a dead call. If only
+  // the mic is blocked, fall back to video-only. Returns null only if nothing
+  // could be captured at all.
+  async function acquireLocalMedia(): Promise<MediaStream | null> {
+    const wantVideo = !audioOnlyParam;
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: wantVideo });
+    } catch (e) {
+      console.warn('Full getUserMedia failed; trying fallbacks', e);
+    }
+    if (wantVideo) {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS });
+        isCameraOff = true; // no camera → tell the peer + show our toggle as off
+        notify('Camera unavailable — joining with audio only.', 'warn');
+        return s;
+      } catch (e) {
+        console.warn('Audio-only fallback failed', e);
+      }
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: true });
+        notify("Microphone unavailable — the other person won't hear you.", 'warn');
+        return s;
+      } catch (e) {
+        console.warn('Video-only fallback failed', e);
+      }
+    }
+    return null;
+  }
+
   async function startMediaAndCall() {
     if (!rtcManager) return;
+    const stream = await acquireLocalMedia();
+    if (!stream) {
+      notify('Could not access camera/microphone. Check browser permissions.', 'error');
+      return;
+    }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: AUDIO_CONSTRAINTS,
-        video: !audioOnlyParam
-      });
-      if (localVideoRef && !audioOnlyParam) {
+      if (localVideoRef && stream.getVideoTracks().length > 0) {
         localVideoRef.srcObject = stream;
       }
       await rtcManager.setLocalStream(stream);
@@ -306,8 +339,8 @@
       attachSpeakingMonitor(stream, true);
       await rtcManager.startCall();
     } catch (e) {
-      console.error('Failed to get media devices', e);
-      notify('Could not access camera/microphone. Check browser permissions.', 'error');
+      console.error('Failed to start call after acquiring media', e);
+      notify('Something went wrong starting the call.', 'error');
     }
   }
 

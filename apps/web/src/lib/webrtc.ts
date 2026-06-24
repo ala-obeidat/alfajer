@@ -855,6 +855,7 @@ export class WebRTCManager {
   }
 
   public endCall() {
+    if (this.cleanedUp) return; // already ended (e.g. onDestroy after explicit hang-up)
     this.sendSignal({ type: 'end' });
     this.cleanup();
     this.onCallEnded?.(false);
@@ -870,7 +871,13 @@ export class WebRTCManager {
     this.sendSignal({ type: 'media_state', payload: { video: enabled } });
   }
 
+  private cleanedUp = false;
   private cleanup() {
+    // Idempotent: endCall() runs cleanup, and the call page's onDestroy calls
+    // endCall() again on navigation — without this guard the worker/pc/ws were
+    // each torn down twice and a redundant 'end' signal was sent.
+    if (this.cleanedUp) return;
+    this.cleanedUp = true;
     this.stopQualityMonitor();
     if (this.screenStream) {
       this.screenStream.getTracks().forEach(t => t.stop());
