@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 1
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           # security-extended enables a larger ruleset than the default;
@@ -54,9 +54,9 @@ jobs:
       - name: Build
         # JavaScript/TypeScript needs no compile step for CodeQL — it
         # analyses the source directly. autobuild is a no-op here.
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4
 
       - name: Perform analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
