@@ -10,3 +10,6 @@
 # Cloudflare _headers / _redirects are parsed by CF's edge — LF only.
 **/static/_headers text eol=lf
 **/static/_redirects text eol=lf
+
+# Gradle wrapper script for the Android app runs on Linux CI.
+gradlew text eol=lf

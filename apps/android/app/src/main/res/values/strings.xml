@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Alfajer</string>
+    <string name="end_call">End call</string>
+    <string name="notif_channel_call">Ongoing call</string>
+    <string name="notif_call_title">Alfajer call in progress</string>
+    <string name="notif_call_text">Private, end-to-end encrypted. Tap to return.</string>
+</resources>
