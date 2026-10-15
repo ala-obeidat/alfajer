@@ -78,8 +78,8 @@ describe('webrtc.ts — chat encryption invariants', () => {
   it('audio E2EE is independently negotiated (audioE2EESupported flag exists)', () => {
     expect(webrtc).toMatch(/audioE2EESupported/);
     expect(webrtc).toMatch(/useAudioE2EE/);
-    // Audio support must be ANDed with peer's flag, not OR'd or short-circuited.
-    expect(webrtc).toMatch(/myAudioE2EESupport\s*&&\s*this\.peerAudioE2EESupport/);
+    // Audio support must be ANDed with the peer's flag (via negotiateUse), not OR'd.
+    expect(webrtc).toMatch(/useAudioE2EE\s*=\s*negotiateUse\(\s*this\.myAudioE2EESupport\s*,\s*this\.peerAudioE2EESupport\s*\)/);
   });
 
   it('ICE restart sends both e2eeSupported and audioE2EESupported to prevent silent downgrade', () => {
