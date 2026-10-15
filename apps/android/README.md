@@ -85,6 +85,47 @@ Without it, links still offer the app in the "Open with" chooser.
 
 ### Release signing
 
-Release builds are minified but unsigned by default; configure a
-`signingConfig` (keystore kept out of git — `*.jks`/`*.keystore` are ignored)
-before publishing.
+Release builds are signed when signing values are provided, and fall back to
+an unsigned (but minified) build otherwise. The key itself never goes into the
+repository.
+
+**1. Create the key once, on your own machine**, and back it up safely —
+losing it means you can never update the app under the same listing:
+
+```bash
+keytool -genkeypair -v -keystore alfajer-release.jks -alias alfajer \
+  -keyalg RSA -keysize 4096 -validity 10000
+```
+
+**2a. Local signed builds** — copy `keystore.properties.example` to
+`keystore.properties` (git-ignored) and fill it in, then:
+
+```bash
+./gradlew :app:assembleRelease   # app/build/outputs/apk/release/app-release.apk
+./gradlew :app:bundleRelease     # app/build/outputs/bundle/release/app-release.aab (Play Store)
+```
+
+Environment variables work too: `ALFAJER_KEYSTORE_FILE`,
+`ALFAJER_KEYSTORE_PASSWORD`, `ALFAJER_KEY_ALIAS`, `ALFAJER_KEY_PASSWORD`.
+
+**2b. CI signed builds** — add these repository secrets (Settings → Secrets
+and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | `base64 -w0 alfajer-release.jks` (macOS: `base64 -i alfajer-release.jks`) |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore password |
+| `ANDROID_KEY_ALIAS` | `alfajer` (or your alias) |
+| `ANDROID_KEY_PASSWORD` | key password |
+
+Then push a tag such as `android-v1.0.0`, or run **Android release** manually
+from the Actions tab. `.github/workflows/android-release.yml` builds a signed
+APK and AAB, verifies the signature, prints the certificate's SHA-256
+fingerprint (the value for `assetlinks.json` above), uploads both as
+artifacts, and on a tag attaches the APK to a GitHub release. `versionName`
+comes from the tag; `versionCode` is the workflow run number, so it always
+increases.
+
+If you publish on Google Play with Play App Signing, this key is your
+*upload* key; use the fingerprint Play Console shows for the app signing key
+in `assetlinks.json`.
