@@ -228,6 +228,7 @@ Bun-managed monorepo:
 |------|------------|
 | `apps/web` | SvelteKit 5 PWA (English-only), `adapter-static`, deployed to Cloudflare Workers Static Assets. |
 | `apps/signaling` | Bun + ElysiaJS WebSocket signaling server with TypeBox-validated payloads. In-memory room registry. |
+| `apps/android` | Native Android app (Kotlin + Jetpack Compose + libwebrtc). Same signaling/TURN/wire protocol as the web app, so Android and browser peers can call each other. See [`apps/android/README.md`](apps/android/README.md). |
 | `infra/coturn` | Hardened CoTURN configuration + env-driven install script (Let's Encrypt cert, renewal hook, hardened defaults). |
 
 Production topology:
