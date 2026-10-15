@@ -1,0 +1,104 @@
+name: Android release
+
+# Builds a signed release APK + AAB. Runs on tags like android-v1.0.0 (and
+# attaches the APK to a GitHub release) or manually from the Actions tab.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   ANDROID_KEYSTORE_BASE64   base64 of the release .jks file
+#   ANDROID_KEYSTORE_PASSWORD keystore password
+#   ANDROID_KEY_ALIAS         key alias inside the keystore
+#   ANDROID_KEY_PASSWORD      key password
+on:
+  push:
+    tags: ['android-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Signed release build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          for v in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Missing secret for $v — see the header of .github/workflows/android-release.yml"
+              exit 1
+            fi
+          done
+          umask 077
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+
+      # versionCode must increase for every store upload: use the run number.
+      # versionName comes from the tag (android-v1.2.3 -> 1.2.3).
+      - name: Build signed APK and AAB
+        env:
+          ALFAJER_KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          ALFAJER_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ALFAJER_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ALFAJER_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/android-v* ]]; then
+            VERSION_NAME="${GITHUB_REF#refs/tags/android-v}"
+          else
+            VERSION_NAME="$(grep '^alfajer.versionName=' gradle.properties | cut -d= -f2)"
+          fi
+          ./gradlew --no-daemon :core:test :app:assembleRelease :app:bundleRelease \
+            -Palfajer.versionCode="${{ github.run_number }}" \
+            -Palfajer.versionName="$VERSION_NAME"
+
+      - name: Verify signature
+        run: |
+          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
+          APK=app/build/outputs/apk/release/app-release.apk
+          "$APKSIGNER" verify --verbose "$APK"
+          # The SHA-256 here is what goes into .well-known/assetlinks.json.
+          "$APKSIGNER" verify --print-certs "$APK" | grep -E 'SHA-256'
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: alfajer-release
+          path: |
+            apps/android/app/build/outputs/apk/release/app-release.apk
+            apps/android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+      - name: Attach APK to GitHub release
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "alfajer-${GITHUB_REF_NAME#android-}.apk"
+          gh release create "$GITHUB_REF_NAME" "alfajer-${GITHUB_REF_NAME#android-}.apk" \
+            --title "Alfajer Android ${GITHUB_REF_NAME#android-}" --generate-notes

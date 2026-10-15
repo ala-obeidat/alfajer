@@ -34,8 +34,10 @@ jobs:
 
       # core:test checks the Kotlin crypto against a vector produced by the
       # browser's WebCrypto (SAS + chat interop with web peers).
+      # assembleRelease runs R8 (unsigned here: no signing secrets on PRs) so
+      # minification problems show up before a release is cut.
       - name: Build and test
-        run: ./gradlew --no-daemon :core:test :app:assembleDebug :app:lintDebug
+        run: ./gradlew --no-daemon :core:test :app:assembleDebug :app:assembleRelease :app:lintDebug
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
